@@ -25,7 +25,7 @@ import { useAuth } from '@/lib/auth-context';
 import { api, ApiError } from '@/lib/api';
 import { canRead, type ReadableModule } from '@/lib/module-access';
 import { useInfiniteList } from '@/lib/use-infinite-list';
-import { ReportsNav } from '../_lib/report-ui';
+
 import {
   Card,
   CardHeader,
@@ -975,7 +975,6 @@ export default function ConsolidatedReportsPage() {
           </div>
         }
       />
-      <ReportsNav role={user?.role} />
 
       {/* One filter row: report View first, then search + status dropdown */}
       <Card padding="sm" className="relative z-20 overflow-visible border-[#DCD8CE]">

@@ -620,12 +620,12 @@ export default function RegionalPage() {
           <>
             {/* Zone Switcher for Management / Admin */}
             {hasRole(['management', 'admin']) && data?.availableZones && (
-              <div className="flex items-center space-x-2 bg-[#FBFAF7] border border-[#DCD8CE] px-3 py-1 rounded-lg text-xs">
-                <span className="text-[10px] font-bold uppercase text-[#4A5568]">Territory:</span>
+              <div className="flex min-w-0 flex-1 basis-[calc(50%-4px)] flex-col gap-0.5 rounded-lg border border-[#DCD8CE] bg-[#FBFAF7] px-3 py-1.5 text-xs sm:flex-none sm:basis-auto sm:flex-row sm:items-center sm:gap-2 sm:py-1">
+                <span className="text-[10px] font-bold uppercase text-[#4A5568]">Territory<span className="max-sm:hidden">:</span></span>
                 <Select
                   value={selectedZoneId}
                   onChange={(e) => { setSelectedZoneId(e.target.value); setSelectedRegionId(''); setTenderPage(1); }}
-                  className="h-8 border-0 bg-transparent text-xs font-bold text-[#0F5E63] focus:ring-0 p-0"
+                  className="h-7 w-full min-w-0 border-0 bg-transparent p-0 text-xs font-bold text-[#0F5E63] focus:ring-0 sm:h-8"
                 >
                   {data.availableZones.map((z: any) => (
                     <option key={z.id} value={z.id}>
@@ -638,12 +638,12 @@ export default function RegionalPage() {
 
             {/* Region filter: narrows every figure on this page to one region of the zone in view */}
             {(data?.regionsInZone?.length ?? 0) > 0 && (
-              <div className="flex items-center space-x-2 bg-[#FBFAF7] border border-[#DCD8CE] px-3 py-1 rounded-lg text-xs">
-                <span className="text-[10px] font-bold uppercase text-[#4A5568]">Region:</span>
+              <div className="flex min-w-0 flex-1 basis-[calc(50%-4px)] flex-col gap-0.5 rounded-lg border border-[#DCD8CE] bg-[#FBFAF7] px-3 py-1.5 text-xs sm:flex-none sm:basis-auto sm:flex-row sm:items-center sm:gap-2 sm:py-1">
+                <span className="text-[10px] font-bold uppercase text-[#4A5568]">Region<span className="max-sm:hidden">:</span></span>
                 <Select
                   value={selectedRegionId}
                   onChange={(e) => { setSelectedRegionId(e.target.value); setTenderPage(1); }}
-                  className="h-8 border-0 bg-transparent text-xs font-bold text-[#0F5E63] focus:ring-0 p-0"
+                  className="h-7 w-full min-w-0 border-0 bg-transparent p-0 text-xs font-bold text-[#0F5E63] focus:ring-0 sm:h-8"
                 >
                   <option value="">All regions</option>
                   {data.regionsInZone.map((r: any) => (
@@ -655,15 +655,15 @@ export default function RegionalPage() {
               </div>
             )}
 
-            <Link href="/regional/performance">
-              <Button variant="secondary" size="sm">
+            <Link href="/regional/performance" className="max-sm:flex-1">
+              <Button variant="secondary" size="sm" className="max-sm:w-full">
                 <TrendingUp className="mr-2 h-4 w-4 text-[#0F5E63]" />
                 <span>Performance</span>
               </Button>
             </Link>
 
-            <Link href="/visits">
-              <Button variant="secondary" size="sm">
+            <Link href="/visits" className="max-sm:flex-1">
+              <Button variant="secondary" size="sm" className="max-sm:w-full">
                 <Calendar className="mr-2 h-4 w-4 text-[#0F5E63]" />
                 <span>Tour Planner</span>
               </Button>

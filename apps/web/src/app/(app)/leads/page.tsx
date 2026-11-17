@@ -60,6 +60,7 @@ import { api } from '@/lib/api';
 import { type UrlParams, dropUrlParams, isUrlDay, urlPicker } from '@/lib/url-filters';
 import { uploadSignedFile } from '@/lib/signed-upload';
 import { phoneInput } from '@/lib/phone-input';
+import { safeHttpUrl } from '@/lib/safe-url';
 import { useOpenParam } from '@/lib/use-open-param';
 import { useInfiniteList } from '@/lib/use-infinite-list';
 import { RelatedRecords } from '@/components/links/RelatedRecords';
@@ -92,6 +93,7 @@ import {
   daysFromToday,
   toneFor,
   ScrollStrip,
+  Heading,
 } from '@/components/ui';
 import type { BadgeProps, BoardLane, RecordItem } from '@/components/ui';
 import { formatLakh, LeadStatus, LeadCategory, LeadType, LeadLossReason, InteractionType, FollowUpStatus, INDIAN_MOBILE_PATTERN, isClosedLeadStatus } from '@arihant/shared';
@@ -205,6 +207,178 @@ const leadUrlFilters = (q: UrlParams) => {
     lead_type: pick('lead_type', (v) => v === 'fresh' || v === 're_approached'),
   };
 };
+
+/** "1 lead", "2 leads". */
+const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+/** Readable channel name for an interaction type ("call" → "Phone Call"). */
+const interactionTypeLabel = (type?: string | null) =>
+  INTERACTION_TYPE_OPTIONS.find((t) => t.value === type)?.label || (type || 'Touchpoint').replace(/_/g, ' ');
+
+/** A small at-a-glance fact on the account Overview (dates and counts, so no count-up animation). */
+function OverviewFact({ label, value, sub, tone = 'default' }: { label: string; value: React.ReactNode; sub?: string; tone?: 'default' | 'danger' }) {
+  return (
+    <div className="min-w-0 rounded-[14px] border border-[#DCD8CE] bg-white p-3">
+      <span className="block text-[10px] font-semibold uppercase tracking-wide text-[#4A5568]">{label}</span>
+      <span className="mt-1 block truncate font-mono text-sm font-bold text-[#14213D]">{value}</span>
+      {sub && <span className={`block truncate text-[10px] ${tone === 'danger' ? 'font-semibold text-[#881337]' : 'text-[#6B7280]'}`}>{sub}</span>}
+    </div>
+  );
+}
+
+const INTERACTION_ICONS: Record<string, string> = {
+  call: '📞',
+  physical_visit: '🏢',
+  video_conference: '🎥',
+  demo: '🎯',
+  proposal: '📄',
+  whatsapp: '💬',
+  email: '✉️',
+  tender_discussion: '⚖️',
+  follow_up: '⏰',
+  service_discussion: '🔧',
+};
+
+/**
+ * One logged touchpoint (Module 1 §8): channel, date, who logged it, contact, minutes, outcome, next action and its
+ * supporting documents. Shared by the lead's Activity & Notes tab and the 360° account timeline so both show the same record.
+ */
+/** "PDF", "PNG"… from a file name, for the document chip. */
+const fileExt = (name?: string | null) => {
+  const m = /\.([a-z0-9]{1,5})$/i.exec(name || '');
+  return m ? m[1].toUpperCase() : 'FILE';
+};
+
+/** "560 B", "48 KB", "1.2 MB". */
+const fileSize = (bytes?: number | null) => {
+  if (!bytes || bytes <= 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+/**
+ * When the touchpoint's next step falls due, relative to today. Cards are history and the follow-up may already be done,
+ * so only today / future dates are coloured (terracotta within 3 days); a past date stays neutral.
+ */
+function dueBadge(date: string) {
+  const days = daysFromToday(date);
+  const on = formatDateIN(date);
+  if (days === null) return { text: `Due ${on}`, variant: 'default' as const };
+  if (days < 0) return { text: `Was due ${on}`, variant: 'default' as const };
+  if (days === 0) return { text: `Due today · ${on}`, variant: 'warning' as const };
+  if (days === 1) return { text: `Due tomorrow · ${on}`, variant: 'warning' as const };
+  return { text: `Due ${on} · in ${days} days`, variant: days <= 3 ? ('warning' as const) : ('info' as const) };
+}
+
+function InteractionCard({ it }: { it: any }) {
+  const docs: any[] = it.attachments || [];
+  const dueDate: string | null = it.followup_date || it.next_action_date || null;
+  const due = dueDate ? dueBadge(dueDate) : null;
+  return (
+    <div className="p-3 sm:p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-2.5 shadow-2xs hover:border-[#0F5E63] transition-colors">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-base">{INTERACTION_ICONS[it.type] || '💬'}</span>
+          <Badge variant="outline" size="sm" className="uppercase font-bold text-[10px]">
+            {it.type?.replace('_', ' ')}
+          </Badge>
+          <span className="text-[11px] text-[#4A5568] font-medium font-mono">
+            {formatDateIN(it.occurred_on || it.interaction_date || it.created_at)}
+          </span>
+          {docs.length > 0 && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-[#D0E5E3] bg-[#E3EFEE] px-2 py-0.5 text-[10px] font-semibold text-[#0F5E63]">
+              <Paperclip className="h-3 w-3" />
+              {docs.length === 1 ? '1 document' : `${docs.length} documents`}
+            </span>
+          )}
+        </div>
+        <div className="text-[10px] text-[#4A5568] sm:text-right">
+          Employee: <strong className="text-[#14213D]">{it.employee_name || it.created_by_name || 'Executive'}</strong>
+        </div>
+      </div>
+
+      {it.contact_name && (
+        <div className="text-[10px] text-[#4A5568] flex flex-wrap items-center gap-1">
+          <User className="h-3 w-3 text-[#4A5568] shrink-0" />
+          <span>Contact Person: <strong className="text-[#14213D]">{it.contact_name}</strong></span>
+          {it.contact_mobile && <span className="font-mono">({it.contact_mobile})</span>}
+        </div>
+      )}
+
+      <p className="text-[#14213D] text-xs leading-relaxed font-sans bg-[#FBFAF7] p-2.5 rounded-lg border border-[#DCD8CE] whitespace-pre-line">
+        {it.remarks || it.notes || 'No discussion notes provided.'}
+      </p>
+
+      {it.outcome && (
+        <div className="text-[11px] text-[#0B4A4E] bg-[#E3EFEE] px-2.5 py-1.5 rounded-lg border border-[#D0E5E3]">
+          <span className="font-semibold">Outcome:</span> {it.outcome}
+        </div>
+      )}
+
+      {(it.next_action || due) && (
+        <div className="rounded-lg border border-[#0F5E63]/30 border-l-4 border-l-[#0F5E63] bg-[#E3EFEE] px-3 py-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-[10px] font-bold uppercase tracking-wide text-[#0B4A4E]">Next step</span>
+            {due && (
+              <Badge variant={due.variant} size="sm" className="font-mono text-[10px]">
+                <Clock className="mr-1 h-3 w-3" />
+                {due.text}
+              </Badge>
+            )}
+          </div>
+          <div className="mt-1 flex items-start gap-1.5 text-sm font-semibold text-[#14213D]">
+            <ArrowRight className="mt-0.5 h-4 w-4 shrink-0 text-[#0F5E63]" />
+            <span className="min-w-0 break-words">{it.next_action || 'Follow up with the client'}</span>
+          </div>
+        </div>
+      )}
+
+      {docs.length > 0 && (
+        <div className="space-y-1.5">
+          <span className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wide text-[#4A5568]">
+            <Paperclip className="h-3.5 w-3.5 text-[#0F5E63]" />
+            Documents ({docs.length})
+          </span>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            {docs.map((att: any) => {
+              const href = safeHttpUrl(att.file_url);
+              const size = fileSize(att.file_size);
+              const body = (
+                <>
+                  <span className="flex h-8 w-10 shrink-0 items-center justify-center rounded-md bg-[#E3EFEE] font-mono text-[9px] font-bold text-[#0F5E63]">
+                    {fileExt(att.file_name)}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-xs font-semibold">{att.file_name || 'Document'}</span>
+                    <span className="block text-[10px] font-normal text-[#4A5568]">{href ? `Open${size ? ` · ${size}` : ''}` : 'Link unavailable'}</span>
+                  </span>
+                  {href && <ExternalLink className="h-4 w-4 shrink-0" />}
+                </>
+              );
+              return href ? (
+                <a
+                  key={att.id}
+                  href={href}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={`Open ${att.file_name || 'document'}`}
+                  className="flex min-h-11 min-w-0 items-center gap-2.5 rounded-lg border border-[#C9C4B8] bg-white px-2.5 py-1.5 text-[#0F5E63] transition-colors hover:border-[#0F5E63] hover:bg-[#E3EFEE] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0F5E63]/30"
+                >
+                  {body}
+                </a>
+              ) : (
+                <span key={att.id} className="flex min-h-11 min-w-0 items-center gap-2.5 rounded-lg border border-[#DCD8CE] bg-[#FBFAF7] px-2.5 py-1.5 text-[#4A5568]">
+                  {body}
+                </span>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function LeadsPage() {
   const { user, hasRole, switchRole } = useAuth();
@@ -1972,7 +2146,6 @@ export default function LeadsPage() {
         ? [lead.product_name]
         : [];
     const productText = products.length > 2 ? `${products.slice(0, 2).join(', ')} +${products.length - 2}` : products.join(', ');
-    const phone = lead.contact_mobile || lead.contact_phone;
     const lastTouch = lead.last_contact_date || lead.last_interaction_at;
     const category = LEAD_CATEGORY_OPTIONS.find((c) => c.value === lead.category)?.label;
     const facts: { label: string; value: React.ReactNode }[] = [
@@ -1997,12 +2170,43 @@ export default function LeadsPage() {
       owner: lead.assignee_name || lead.assigned_salesperson_name || 'Unassigned',
       facts,
       primary: { label: 'Log touch', icon: <MessageSquare />, onClick: () => openLogTouch(lead) },
-      quick: phone
-        ? [{ label: `Call ${lead.contact_name || 'contact'}`, icon: <Phone />, onClick: () => { window.location.href = `tel:${phone}`; } }]
-        : undefined,
       onOpen: () => handleOpenLead(lead.id),
     };
   });
+
+  // Dates and Sort sit beside View on phones and in the filter row from tablet up.
+  const leadDatesButton = (phone: boolean) => (
+    <button
+      type="button"
+      onClick={() => setLeadDatesOpen((o) => !o)}
+      aria-expanded={leadDatesOpen}
+      aria-label="Dates"
+      className={`filter-menu-btn ${phone ? 'shrink-0 sm:!hidden' : 'max-sm:!hidden'} ${leadDatesOpen || leadDatesActive ? 'filter-menu-btn--on' : ''}`}
+    >
+      <CalendarDays className="h-3.5 w-3.5" />
+      <span>Dates</span>
+      {leadDatesActive && <span className="filter-menu-chip">On</span>}
+    </button>
+  );
+  const leadSortMenu = (phone: boolean) => (
+    <FilterMenu
+      label="Sort"
+      icon={<ArrowUpDown />}
+      className={phone ? 'shrink-0 sm:!hidden' : 'max-sm:!hidden'}
+      neutralKeys={[...LEAD_SORT_FIELDS.map((f) => f.key), 'dir_desc', 'dir_asc']}
+      align="right"
+      options={[
+        ...LEAD_SORT_FIELDS.map((f) => ({
+          key: f.key,
+          label: f.label,
+          active: leadFilters.sort_by === f.key,
+          onSelect: () => updateLeadFilter({ sort_by: f.key }),
+        })),
+        { key: 'dir_desc', label: 'Descending', icon: <ChevronDown />, active: leadFilters.sort_dir === 'desc', onSelect: () => updateLeadFilter({ sort_dir: 'desc' }) },
+        { key: 'dir_asc', label: 'Ascending', icon: <ChevronUp />, active: leadFilters.sort_dir === 'asc', onSelect: () => updateLeadFilter({ sort_dir: 'asc' }) },
+      ]}
+    />
+  );
 
   // Lead register as the page's own table (RecordViews list) — same rows, same order as leadRecordItems.
   const leadList = leads.length ? (
@@ -2259,7 +2463,15 @@ export default function LeadsPage() {
       {/* 3. One filter row on every view: the View menu switches the register, then that view's search and dropdowns. */}
       <Card padding="sm" className="relative z-20 space-y-2.5 overflow-visible border-[#DCD8CE]">
         <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
-          <FilterMenu label="View" icon={<LayoutList />} neutralKeys={[]} className="shrink-0" options={workspaceViewOptions} />
+          <div className="flex w-full min-w-0 max-w-full items-center gap-2 lg:w-auto">
+            <FilterMenu label="View" icon={<LayoutList />} neutralKeys={[]} compactOnPhone className="min-w-0 shrink max-sm:[&_.filter-menu-btn]:max-w-full max-sm:[&_.filter-menu-btn]:overflow-hidden max-sm:[&_.filter-menu-chip]:min-w-0" options={workspaceViewOptions} />
+            {activeTab === 'leads' && (
+              <>
+                {leadDatesButton(true)}
+                {leadSortMenu(true)}
+              </>
+            )}
+          </div>
 
           {activeTab === 'leads' && (
             <>
@@ -2312,32 +2524,8 @@ export default function LeadsPage() {
                   <span>More</span>
                   {moreLeadFiltersActive > 0 && <span className="filter-menu-chip">{moreLeadFiltersActive}</span>}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setLeadDatesOpen((o) => !o)}
-                  aria-expanded={leadDatesOpen}
-                  className={`filter-menu-btn ${leadDatesOpen || leadDatesActive ? 'filter-menu-btn--on' : ''}`}
-                >
-                  <CalendarDays className="h-3.5 w-3.5" />
-                  <span>Dates</span>
-                  {leadDatesActive && <span className="filter-menu-chip">On</span>}
-                </button>
-                <FilterMenu
-                  label="Sort"
-                  icon={<ArrowUpDown />}
-                  neutralKeys={[...LEAD_SORT_FIELDS.map((f) => f.key), 'dir_desc', 'dir_asc']}
-                  align="right"
-                  options={[
-                    ...LEAD_SORT_FIELDS.map((f) => ({
-                      key: f.key,
-                      label: f.label,
-                      active: leadFilters.sort_by === f.key,
-                      onSelect: () => updateLeadFilter({ sort_by: f.key }),
-                    })),
-                    { key: 'dir_desc', label: 'Descending', icon: <ChevronDown />, active: leadFilters.sort_dir === 'desc', onSelect: () => updateLeadFilter({ sort_dir: 'desc' }) },
-                    { key: 'dir_asc', label: 'Ascending', icon: <ChevronUp />, active: leadFilters.sort_dir === 'asc', onSelect: () => updateLeadFilter({ sort_dir: 'asc' }) },
-                  ]}
-                />
+                {leadDatesButton(false)}
+                {leadSortMenu(false)}
                 {hasActiveLeadFilters && (
                   <Button variant="ghost" size="xs" onClick={clearLeadFilters} className="text-xs text-[#4A5568] hover:text-[#881337]">
                     Clear
@@ -3719,7 +3907,7 @@ export default function LeadsPage() {
             <ScrollStrip role="tablist" aria-label="Lead sections" activeKey={leadDetailTab} wrapperClassName="border-b border-[#DCD8CE]" className="items-center gap-1 pb-px">
               {([
                 ['overview', 'Overview', null],
-                ['activity', 'Activity & Notes', null],
+                ['activity', 'Activity & Notes', (selectedLead.interactions || []).length],
                 ['conversation', 'Conversation', selectedLead.message_count || 0],
                 ['products', 'Products', (selectedLead.product_interests || []).length || (selectedLead.product_name ? 1 : 0)],
                 ['ownership', 'Ownership History', (selectedLead.assignment_history || []).length],
@@ -3915,6 +4103,20 @@ export default function LeadsPage() {
                     <span className="text-[#4A5568] italic">No remarks provided during opportunity registration.</span>
                   )}
                 </div>
+              </div>
+              <div className="space-y-2 border-t border-[#ECE9E2] pt-3">
+                <span className="text-[10px] font-bold text-[#4A5568] uppercase block">
+                  Touchpoint history ({(selectedLead.interactions || []).length})
+                </span>
+                {(selectedLead.interactions || []).length === 0 ? (
+                  <p className="text-[11px] text-[#4A5568] italic">No touchpoints logged yet. Use Log Touchpoint to record calls, meetings and their documents.</p>
+                ) : (
+                  <div className="space-y-2">
+                    {(selectedLead.interactions || []).map((it: any) => (
+                      <InteractionCard key={it.id} it={it} />
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
 
@@ -4995,458 +5197,184 @@ export default function LeadsPage() {
         isOpen={isCustomer360Open}
         onClose={() => setIsCustomer360Open(false)}
         title={selectedCustomer?.name || 'Customer 360° Account View'}
-        description={`${selectedCustomer?.city || 'Delhi'}, ${selectedCustomer?.state || 'Delhi'} • Sector: ${selectedCustomer?.sector || 'Defence'} • Zone: ${selectedCustomer?.zone_name || 'North'}`}
+        description={[
+          [selectedCustomer?.city, selectedCustomer?.state].filter(Boolean).join(', '),
+          selectedCustomer?.sector,
+          selectedCustomer?.zone_name && `${selectedCustomer.zone_name} zone`,
+        ].filter(Boolean).join(' • ')}
         maxWidth="4xl"
       >
         {selectedCustomer && (
           <div className="space-y-5 text-xs">
-            {/* Account Quick Intelligence Bar */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3.5 rounded-xl bg-[#FBFAF7] border border-[#DCD8CE]">
-              <div>
-                <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Account Sector</span>
-                <span className="font-semibold text-[#14213D] mt-0.5 block">
-                  {selectedCustomer.sector || 'Government / PSU'}
-                </span>
-                {selectedCustomer.department && (
-                  <span className="text-[10px] text-[#4A5568] block truncate">{selectedCustomer.department}</span>
-                )}
-              </div>
-              <div>
-                <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Territory & Zone</span>
-                <span className="font-semibold text-[#14213D] mt-0.5 block">
-                  {selectedCustomer.zone_name || 'North'} ({selectedCustomer.region_name || selectedCustomer.city || 'HQ'})
-                </span>
-                <span className="text-[10px] text-[#4A5568] block">
-                  {selectedCustomer.city || '—'}, {selectedCustomer.state || '—'}
-                </span>
-              </div>
-              <div>
-                <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Current Sales Lead</span>
-                <span className="font-bold text-[#0F5E63] mt-0.5 block">
-                  {customerManagementSummary?.current_salesperson || selectedCustomer.current_salesperson || 'Assigned Rep'}
-                </span>
-                <span className="text-[10px] text-[#0F5E63] font-semibold block">Active Territory Owner</span>
-              </div>
-              <div>
-                <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Pipeline Volume</span>
-                <span className="font-extrabold text-[#14213D] mt-0.5 block">
-                  {customerLeadsTotal} Leads • {customerTimeline.length} Touchpoints
-                </span>
-                <span className="text-[10px] text-[#4A5568] block">
-                  {customerContacts.length} Registered Contacts
-                </span>
-              </div>
+            {/* Account facts */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 p-3.5 rounded-[14px] bg-[#FBFAF7] border border-[#DCD8CE]">
+              {[
+                { label: 'Sector', value: selectedCustomer.sector || '—', sub: selectedCustomer.department, accent: false },
+                {
+                  label: 'Territory',
+                  value: [selectedCustomer.zone_name, selectedCustomer.region_name].filter(Boolean).join(' · ') || '—',
+                  sub: [selectedCustomer.city, selectedCustomer.state].filter(Boolean).join(', '),
+                  accent: false,
+                },
+                { label: 'Account owner', value: customerManagementSummary?.current_salesperson || selectedCustomer.current_salesperson || 'Unassigned', sub: '', accent: true },
+                { label: 'Activity', value: `${plural(customerLeadsTotal, 'lead')} · ${plural(customerTimeline.length, 'touchpoint')}`, sub: plural(customerContacts.length, 'contact'), accent: false },
+              ].map((f) => (
+                <div key={f.label} className="min-w-0">
+                  <span className="block text-[10px] font-semibold uppercase tracking-wide text-[#4A5568]">{f.label}</span>
+                  <span className={`mt-0.5 block truncate font-semibold ${f.accent ? 'text-[#0F5E63]' : 'text-[#14213D]'}`}>{f.value}</span>
+                  {f.sub && <span className="block truncate text-[10px] text-[#4A5568]">{f.sub}</span>}
+                </div>
+              ))}
             </div>
 
-            {/* Sub-Navigation Tabs: one sliding row on phones */}
-            <ScrollStrip role="tablist" aria-label="Customer 360 sections" activeKey={c360Tab} wrapperClassName="border-b border-[#DCD8CE]" className="items-center gap-1.5 pb-2">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={c360Tab === 'management'}
-                onClick={() => setC360Tab('management')}
-                className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
-                  c360Tab === 'management'
-                    ? 'bg-[#0F5E63] text-white shadow-xs'
-                    : 'bg-[#FBFAF7] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
-                }`}
-              >
-                <ShieldCheck className="h-3.5 w-3.5" />
-                <span>Executive Management HUD</span>
-              </button>
-
-              <button
-                type="button"
-                role="tab"
-                aria-selected={c360Tab === 'timeline'}
-                onClick={() => setC360Tab('timeline')}
-                className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
-                  c360Tab === 'timeline'
-                    ? 'bg-[#0F5E63] text-white shadow-xs'
-                    : 'bg-[#FBFAF7] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
-                }`}
-              >
-                <History className="h-3.5 w-3.5" />
-                <span>Chronological Timeline</span>
-                <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${c360Tab === 'timeline' ? 'bg-white/20 text-white' : 'bg-[#DCD8CE] text-[#14213D]'}`}>
-                  {customerTimeline.length}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                role="tab"
-                aria-selected={c360Tab === 'contacts'}
-                onClick={() => setC360Tab('contacts')}
-                className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
-                  c360Tab === 'contacts'
-                    ? 'bg-[#0F5E63] text-white shadow-xs'
-                    : 'bg-[#FBFAF7] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
-                }`}
-              >
-                <Users className="h-3.5 w-3.5" />
-                <span>Contacts Roster</span>
-                <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${c360Tab === 'contacts' ? 'bg-white/20 text-white' : 'bg-[#DCD8CE] text-[#14213D]'}`}>
-                  {customerContacts.length}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                role="tab"
-                aria-selected={c360Tab === 'deals'}
-                onClick={() => setC360Tab('deals')}
-                className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
-                  c360Tab === 'deals'
-                    ? 'bg-[#0F5E63] text-white shadow-xs'
-                    : 'bg-[#FBFAF7] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
-                }`}
-              >
-                <Briefcase className="h-3.5 w-3.5" />
-                <span>Opportunities</span>
-                <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${c360Tab === 'deals' ? 'bg-white/20 text-white' : 'bg-[#DCD8CE] text-[#14213D]'}`}>
-                  {customerLeadsTotal}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                role="tab"
-                aria-selected={c360Tab === 'linked'}
-                onClick={() => setC360Tab('linked')}
-                className={`shrink-0 whitespace-nowrap px-3 py-1.5 rounded-lg font-semibold text-xs transition-all flex items-center gap-1.5 ${
-                  c360Tab === 'linked'
-                    ? 'bg-[#0F5E63] text-white shadow-xs'
-                    : 'bg-[#FBFAF7] text-[#4A5568] hover:bg-[#E3EFEE] hover:text-[#0F5E63] border border-[#DCD8CE]'
-                }`}
-              >
-                <Layers className="h-3.5 w-3.5" />
-                <span>Linked records</span>
-              </button>
+            {/* Sections: one sliding row on phones, same style as the lead dialog's tabs */}
+            <ScrollStrip role="tablist" aria-label="Account sections" activeKey={c360Tab} wrapperClassName="border-b border-[#DCD8CE]" className="items-center gap-1 pb-px">
+              {([
+                ['management', 'Overview', null],
+                ['timeline', 'Timeline', customerTimeline.length],
+                ['contacts', 'Contacts', customerContacts.length],
+                ['deals', 'Opportunities', customerLeadsTotal],
+                ['linked', 'Linked records', null],
+              ] as const).map(([key, lbl, count]) => (
+                <button
+                  key={key}
+                  type="button"
+                  role="tab"
+                  aria-selected={c360Tab === key}
+                  onClick={() => setC360Tab(key)}
+                  className={`px-3.5 py-2 text-xs font-semibold whitespace-nowrap border-b-2 -mb-px transition-colors ${
+                    c360Tab === key ? 'border-[#0F5E63] text-[#0F5E63]' : 'border-transparent text-[#4A5568] hover:text-[#14213D]'
+                  }`}
+                >
+                  {lbl}
+                  {count ? <span className="ml-1.5 px-1.5 py-0.5 rounded-full bg-[#E3EFEE] text-[#0F5E63] text-[10px]">{count}</span> : null}
+                </button>
+              ))}
             </ScrollStrip>
 
-            {/* TAB 1: EXECUTIVE MANAGEMENT INTELLIGENCE HUD */}
-            {c360Tab === 'management' && (
-              <div className="space-y-4">
-                {/* 1. Touchpoint Horizons: First vs Latest Interaction */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {/* First Interaction Card */}
-                  <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-2 shadow-2xs">
-                    <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-                      <span className="font-bold text-[#14213D] text-xs uppercase tracking-wide flex items-center gap-1.5">
-                        <Activity className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
-                        <span>First Interaction (Prospect Onboarding)</span>
-                      </span>
-                      {customerManagementSummary?.first_interaction?.occurred_on && (
-                        <Badge variant="info" size="sm" className="font-mono text-[10px]">
-                          {formatDateIN(customerManagementSummary.first_interaction.occurred_on)}
-                        </Badge>
-                      )}
-                    </div>
-                    {customerManagementSummary?.first_interaction ? (
-                      <div className="space-y-1.5 pt-1 text-[11px]">
-                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                          <Badge variant="outline" size="sm" className="uppercase font-bold text-[9px]">
-                            {customerManagementSummary.first_interaction.type}
-                          </Badge>
-                          <span className="text-[#4A5568]">
-                            Conducted by: <strong className="text-[#14213D]">{customerManagementSummary.first_interaction.employee_name || 'Executive'}</strong>
-                          </span>
-                        </div>
-                        {customerManagementSummary.first_interaction.contact_name && (
-                          <div className="text-[#4A5568]">
-                            Client Contact: <span className="font-medium text-[#14213D]">{customerManagementSummary.first_interaction.contact_name}</span>
-                          </div>
-                        )}
-                        <p className="text-[#14213D] italic bg-[#FBFAF7] p-2 rounded-lg border border-[#DCD8CE]">
-                          "{customerManagementSummary.first_interaction.remarks || customerManagementSummary.first_interaction.notes || 'Initial prospect connection established.'}"
-                        </p>
-                        {customerManagementSummary.first_interaction.outcome && (
-                          <div className="text-[10px] text-[#0B4A4E] font-semibold">
-                            Outcome: {customerManagementSummary.first_interaction.outcome}
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="p-3 text-center text-[#4A5568] italic">No first interaction on record.</div>
-                    )}
-                  </div>
-
-                  {/* Latest Interaction Card */}
-                  <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-2 shadow-2xs">
-                    <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-                      <span className="font-bold text-[#14213D] text-xs uppercase tracking-wide flex items-center gap-1.5">
-                        <Clock className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
-                        <span>Latest Interaction (Recent Touchpoint)</span>
-                      </span>
-                      {customerManagementSummary?.latest_interaction?.occurred_on && (
-                        <Badge variant="success" size="sm" className="font-mono text-[10px]">
-                          {formatDateIN(customerManagementSummary.latest_interaction.occurred_on)}
-                        </Badge>
-                      )}
-                    </div>
-                    {customerManagementSummary?.latest_interaction ? (
-                      <div className="space-y-1.5 pt-1 text-[11px]">
-                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                          <Badge variant="outline" size="sm" className="uppercase font-bold text-[9px]">
-                            {customerManagementSummary.latest_interaction.type}
-                          </Badge>
-                          <span className="text-[#4A5568]">
-                            Conducted by: <strong className="text-[#14213D]">{customerManagementSummary.latest_interaction.employee_name || 'Executive'}</strong>
-                          </span>
-                        </div>
-                        {customerManagementSummary.latest_interaction.contact_name && (
-                          <div className="text-[#4A5568]">
-                            Client Contact: <span className="font-medium text-[#14213D]">{customerManagementSummary.latest_interaction.contact_name}</span>
-                          </div>
-                        )}
-                        <p className="text-[#14213D] italic bg-[#FBFAF7] p-2 rounded-lg border border-[#DCD8CE]">
-                          "{customerManagementSummary.latest_interaction.remarks || customerManagementSummary.latest_interaction.notes || 'Interaction discussion recorded.'}"
-                        </p>
-                        {customerManagementSummary.latest_interaction.outcome && (
-                          <div className="text-[10px] text-[#0B4A4E] font-semibold">
-                            Outcome: {customerManagementSummary.latest_interaction.outcome}
-                          </div>
-                        )}
-                        {customerManagementSummary.latest_interaction.next_action && (
-                          <div className="text-[10px] text-[#0F5E63] font-semibold flex items-center gap-1">
-                            <ArrowRight className="h-3 w-3" />
-                            <span>Next Action: {customerManagementSummary.latest_interaction.next_action}</span>
-                          </div>
-                        )}
-                      </div>
-                    ) : (
-                      <div className="p-3 text-center text-[#4A5568] italic">No touchpoints recorded yet.</div>
-                    )}
-                  </div>
-                </div>
-
-                {/* 2. Salesperson Continuity & Product Interests */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {/* Salesperson Continuity Audit */}
-                  <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-2 shadow-2xs">
-                    <div className="flex items-center justify-between">
-                      <span className="font-bold text-[#14213D] text-xs uppercase tracking-wide flex items-center gap-1.5">
-                        <UserCheck className="h-3.5 w-3.5 text-[#0F5E63]" />
-                        <span>Salesperson Ownership Continuity</span>
-                      </span>
-                    </div>
-
-                    <div className="p-2.5 rounded-lg bg-[#E3EFEE]/50 border border-[#DCD8CE] flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <span className="text-[10px] uppercase text-[#4A5568] font-bold block">Current Active Salesperson</span>
-                        <span className="font-bold text-[#0F5E63] text-xs">
-                          {customerManagementSummary?.current_salesperson || 'Unassigned'}
-                        </span>
-                      </div>
-                      <Badge variant="info" size="sm">CURRENT OWNER</Badge>
-                    </div>
-
-                    {customerManagementSummary?.previous_salespersons && customerManagementSummary.previous_salespersons.length > 0 ? (
-                      <div className="space-y-1.5 pt-1">
-                        <span className="text-[10px] uppercase font-bold text-[#4A5568] block">Previous Salespersons &amp; Reassignments:</span>
-                        {customerManagementSummary.previous_salespersons.map((h: any, idx: number) => (
-                          <div
-                            key={idx}
-                            className="p-2 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] flex items-center justify-between gap-2 text-[10px]"
-                          >
-                            <div className="min-w-0">
-                              {h.source ? (
-                                <span className="font-semibold text-[#14213D]">
-                                  {h.salesperson_name || 'Former team member'}
-                                  <span className="font-normal text-[#4A5568]"> · {h.source === 'lead' ? 'owned a lead' : 'logged interactions'}</span>
-                                </span>
-                              ) : (
-                                <span className="font-semibold text-[#14213D]">
-                                  {h.previous_salesperson_name || 'Unassigned'} → {h.new_salesperson_name}
-                                </span>
-                              )}
-                              {h.reason && <span className="text-[#4A5568] block">Reason: {h.reason}</span>}
-                            </div>
-                            <span className="shrink-0 text-[#4A5568] font-mono text-[9px]">
-                              {formatDateIN(h.changed_at)}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="text-[10px] text-[#4A5568] italic pt-1">
-                        Initial salesperson assignment active. No previous transfers on record.
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Product Interest Landscape */}
-                  <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-2 shadow-2xs">
-                    <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-                      <span className="font-bold text-[#14213D] text-xs uppercase tracking-wide flex items-center gap-1.5">
-                        <Tag className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
-                        <span>Product Interest Landscape</span>
-                      </span>
-                      <Badge variant="outline" size="sm">
-                        {customerManagementSummary?.product_interests?.length || 0} Products
-                      </Badge>
-                    </div>
-
-                    {customerManagementSummary?.product_interests && customerManagementSummary.product_interests.length > 0 ? (
-                      <div className="flex flex-wrap gap-1.5 pt-1">
-                        {customerManagementSummary.product_interests.map((pName: string, idx: number) => (
-                          <span
-                            key={idx}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] text-[11px] font-semibold text-[#0F5E63]"
-                          >
-                            <Check className="h-3 w-3 text-[#0F5E63]" />
-                            <span>{pName}</span>
-                          </span>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="text-[10px] text-[#4A5568] italic pt-2">
-                        No product interests linked to opportunities yet.
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* 3. Previous Meetings & Field Demonstrations */}
-                <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-2 shadow-2xs">
-                  <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-                    <span className="font-bold text-[#14213D] text-xs uppercase tracking-wide flex items-center gap-1.5">
-                      <Building className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
-                      <span>Previous In-Person Meetings & Demonstrations (Face-to-Face Field Touchpoints)</span>
-                    </span>
-                    <Badge variant="info" size="sm">
-                      {customerManagementSummary?.previous_meetings?.length || 0} Meetings Held
-                    </Badge>
-                  </div>
-
-                  {customerManagementSummary?.previous_meetings && customerManagementSummary.previous_meetings.length > 0 ? (
-                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1">
-                      {customerManagementSummary.previous_meetings.map((m: any) => (
-                        <div
-                          key={m.id}
-                          className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] space-y-1 text-[11px]"
-                        >
-                          <div className="flex items-center justify-between">
-                            <Badge variant="outline" size="sm" className="uppercase font-bold text-[9px]">
-                              {m.type === 'physical_visit' ? 'Face-to-Face Visit' : m.type === 'video_conference' ? 'Video Conference' : m.type === 'demo' ? 'Demonstration' : m.type}
-                            </Badge>
-                            <span className="text-[#4A5568] font-mono text-[10px]">
-                              {formatDateIN(m.occurred_on || m.interaction_date)}
-                            </span>
-                          </div>
-                          <div className="text-[#4A5568] text-[10px]">
-                            Conducted by: <strong className="text-[#14213D]">{m.employee_name || 'Executive'}</strong>
-                            {m.contact_name && <span> • Contact: <strong className="text-[#14213D]">{m.contact_name}</strong></span>}
-                          </div>
-                          <p className="text-[#14213D] line-clamp-2">
-                            {m.remarks || m.notes || 'Meeting concluded.'}
-                          </p>
-                          {m.outcome && (
-                            <div className="text-[10px] text-[#0B4A4E] font-semibold">
-                              Outcome: {m.outcome}
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-[11px] text-[#4A5568] italic p-2 bg-[#FBFAF7] rounded-lg border border-[#DCD8CE] text-center">
-                      No physical visits or product demonstrations recorded yet.
-                    </div>
-                  )}
-                </div>
-
-                {/* 4. Follow-Up History & Compliance */}
-                <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-3 shadow-2xs">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-[#14213D] text-xs uppercase tracking-wide flex items-center gap-1.5">
-                      <CalendarDays className="h-3.5 w-3.5 text-[#0F5E63]" />
-                      <span>Follow-up History & Compliance Status</span>
-                    </span>
-                  </div>
-
+            {/* TAB 1: OVERVIEW — where the account stands, in four plain sections. Full history lives on the Timeline tab. */}
+            {c360Tab === 'management' && (() => {
+              const s = customerManagementSummary;
+              const latest = customerTimeline[0] || s?.latest_interaction || null;
+              const first = s?.first_interaction || null;
+              const followUps = s?.follow_up_history;
+              const opps: any[] = s?.current_opportunity_status || [];
+              const products: string[] = s?.product_interests || [];
+              const previous: any[] = s?.previous_salespersons || [];
+              const owner = s?.current_salesperson || selectedCustomer.current_salesperson || 'Unassigned';
+              const pipelineLakh = opps.reduce((sum, o) => sum + Number(o.value_lakh || 0), 0);
+              return (
+                <div className="space-y-5">
+                  {/* At a glance */}
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-                    <div className="p-2.5 rounded-lg bg-[#FBFAF7] border border-[#DCD8CE] text-center">
-                      <span className="text-[10px] text-[#4A5568] uppercase font-bold block">Total Scheduled</span>
-                      <span className="text-sm font-extrabold text-[#14213D] mt-0.5 block">
-                        {customerManagementSummary?.follow_up_history?.total || 0}
-                      </span>
-                    </div>
-                    <div className="p-2.5 rounded-lg bg-[#FFF8EB] border border-[#E9C9B4] text-center">
-                      <span className="text-[10px] text-[#7C2D12] uppercase font-bold block">Pending</span>
-                      <span className="text-sm font-extrabold text-[#7C2D12] mt-0.5 block">
-                        {customerManagementSummary?.follow_up_history?.pending || 0}
-                      </span>
-                    </div>
-                    <div className="p-2.5 rounded-lg bg-[#E3EFEE] border border-[#D0E5E3] text-center">
-                      <span className="text-[10px] text-[#0B4A4E] uppercase font-bold block">Completed</span>
-                      <span className="text-sm font-extrabold text-[#0B4A4E] mt-0.5 block">
-                        {customerManagementSummary?.follow_up_history?.completed || 0}
-                      </span>
-                    </div>
-                    <div className="p-2.5 rounded-lg bg-[#FCE8EC] border border-[#F3C7CF] text-center">
-                      <span className="text-[10px] text-[#700F2D] uppercase font-bold block">Overdue</span>
-                      <span className="text-sm font-extrabold text-[#700F2D] mt-0.5 block">
-                        {customerManagementSummary?.follow_up_history?.overdue || 0}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-
-                {/* 5. Current Opportunity Status */}
-                <div className="p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-2 shadow-2xs">
-                  <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
-                    <span className="font-bold text-[#14213D] text-xs uppercase tracking-wide flex items-center gap-1.5">
-                      <Target className="h-3.5 w-3.5 text-[#0F5E63] shrink-0" />
-                      <span>Current Opportunity Status Across Account</span>
-                    </span>
-                    <Badge variant="info" size="sm">
-                      {customerManagementSummary?.current_opportunity_status?.length || 0} Active Leads
-                    </Badge>
+                    <OverviewFact
+                      label="Last touchpoint"
+                      value={latest ? formatDateIN(latest.occurred_on || latest.interaction_date || latest.created_at) : 'None yet'}
+                      sub={latest ? `${interactionTypeLabel(latest.type)} · ${latest.employee_name || 'Executive'}` : undefined}
+                    />
+                    <OverviewFact
+                      label="First contact"
+                      value={first ? formatDateIN(first.occurred_on || first.interaction_date || first.created_at) : '—'}
+                      sub={first ? `${interactionTypeLabel(first.type)} · ${first.employee_name || 'Executive'}` : undefined}
+                    />
+                    <OverviewFact
+                      label="Follow-ups pending"
+                      value={followUps?.pending ?? 0}
+                      sub={followUps?.overdue ? `${followUps.overdue} overdue` : 'None overdue'}
+                      tone={followUps?.overdue ? 'danger' : 'default'}
+                    />
+                    <OverviewFact label="Opportunities" value={opps.length} sub={opps.length ? `${formatLakh(pipelineLakh)} in pipeline` : undefined} />
                   </div>
 
-                  {customerManagementSummary?.current_opportunity_status && customerManagementSummary.current_opportunity_status.length > 0 ? (
-                    <div className="divide-y divide-[#DCD8CE] border border-[#DCD8CE] rounded-lg overflow-hidden">
-                      {customerManagementSummary.current_opportunity_status.map((opp: any) => (
-                        <div key={opp.id} className="p-2.5 bg-white flex flex-col gap-1.5 sm:flex-row sm:items-center sm:justify-between text-[11px] hover:bg-[#FBFAF7]">
-                          <div>
-                            <div className="font-bold text-[#14213D] flex flex-wrap items-center gap-x-2 gap-y-1">
-                              <span>{opp.product_name}</span>
-                              {opp.lead_type === 're_approached' ? (
-                                <Badge variant="warning" size="sm" className="font-bold text-[9px]">
-                                  RE-APPROACHED
-                                </Badge>
-                              ) : (
-                                <Badge variant="info" size="sm" className="font-bold text-[9px]">
-                                  FRESH
-                                </Badge>
-                              )}
+                  {/* Latest touchpoint, with its documents */}
+                  <section className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <Heading as="h4" size="sm">Latest touchpoint</Heading>
+                      {customerTimeline.length > 1 && (
+                        <Button size="xs" variant="ghost" rightIcon={<ArrowRight className="h-3 w-3" />} onClick={() => setC360Tab('timeline')}>
+                          All {customerTimeline.length} touchpoints
+                        </Button>
+                      )}
+                    </div>
+                    {latest ? (
+                      <InteractionCard it={latest} />
+                    ) : (
+                      <p className="rounded-[14px] border border-[#DCD8CE] bg-white p-3 text-[11px] italic text-[#4A5568]">No touchpoints logged yet.</p>
+                    )}
+                  </section>
+
+                  {/* Opportunities */}
+                  <section className="space-y-2">
+                    <Heading as="h4" size="sm">Opportunities</Heading>
+                    {opps.length === 0 ? (
+                      <p className="rounded-[14px] border border-[#DCD8CE] bg-white p-3 text-[11px] italic text-[#4A5568]">No opportunities registered for this account.</p>
+                    ) : (
+                      <div className="divide-y divide-[#ECE9E2] overflow-hidden rounded-[14px] border border-[#DCD8CE] bg-white">
+                        {opps.map((opp) => (
+                          <div key={opp.id} className="flex flex-col gap-1.5 p-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="min-w-0">
+                              <div className="truncate font-semibold text-[#14213D]">{opp.product_name}</div>
+                              <div className="text-[11px] text-[#4A5568]">
+                                {opp.assigned_salesperson || 'Unassigned'}
+                                {opp.next_followup_date && <> · Next follow-up <span className="font-mono">{formatDateIN(opp.next_followup_date)}</span></>}
+                              </div>
                             </div>
-                            <div className="text-[10px] text-[#4A5568] mt-0.5">
-                              Assigned: <strong className="text-[#14213D]">{opp.assigned_salesperson || 'Unassigned'}</strong>
-                              {opp.next_followup_date && (
-                                <span> • Next Due: <strong className="text-[#0F5E63]">{formatDateIN(opp.next_followup_date)}</strong></span>
-                              )}
+                            <div className="flex shrink-0 items-center gap-3">
+                              <span className="font-mono font-semibold text-[#14213D]">{formatLakh(opp.value_lakh || 0)}</span>
+                              {getStatusBadge(opp.status)}
                             </div>
                           </div>
-                          <div className="flex flex-wrap items-center gap-3">
-                            <span className="font-mono font-bold text-[#14213D]">
-                              {formatLakh(opp.value_lakh || 0)}
-                            </span>
-                            {getStatusBadge(opp.status)}
-                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+
+                  {/* People and products */}
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                    <section className="space-y-2">
+                      <Heading as="h4" size="sm">People</Heading>
+                      <div className="space-y-2 rounded-[14px] border border-[#DCD8CE] bg-white p-3 text-[11px]">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[#4A5568]">Account owner</span>
+                          <strong className="truncate text-[#0F5E63]">{owner}</strong>
                         </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <div className="text-[11px] text-[#4A5568] italic p-3 text-center bg-[#FBFAF7] rounded-lg border border-[#DCD8CE]">
-                      No opportunities registered for this organization.
-                    </div>
-                  )}
+                        {previous.length > 0 && (
+                          <div className="space-y-1.5 border-t border-[#ECE9E2] pt-2">
+                            <span className="block text-[#4A5568]">Previously involved</span>
+                            {previous.map((h, idx) => (
+                              <div key={idx} className="flex items-start justify-between gap-2">
+                                <span className="min-w-0 text-[#14213D]">
+                                  {h.source ? h.salesperson_name || 'Former team member' : `${h.previous_salesperson_name || 'Unassigned'} → ${h.new_salesperson_name}`}
+                                  <span className="text-[#6B7280]"> · {h.source === 'lead' ? 'owned a lead' : h.source ? 'logged touchpoints' : 'reassigned'}</span>
+                                  {h.reason && <span className="block text-[#6B7280]">{h.reason}</span>}
+                                </span>
+                                <span className="shrink-0 font-mono text-[10px] text-[#6B7280]">{formatDateIN(h.changed_at)}</span>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </section>
+                    <section className="space-y-2">
+                      <Heading as="h4" size="sm">Products of interest</Heading>
+                      <div className="rounded-[14px] border border-[#DCD8CE] bg-white p-3">
+                        {products.length > 0 ? (
+                          <div className="flex flex-wrap gap-1.5">
+                            {products.map((p) => (
+                              <span key={p} className="rounded-full border border-[#D0E5E3] bg-[#E3EFEE] px-2.5 py-1 text-[11px] font-semibold text-[#0F5E63]">
+                                {p}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-[11px] italic text-[#4A5568]">No products linked yet.</p>
+                        )}
+                      </div>
+                    </section>
+                  </div>
                 </div>
-              </div>
-            )}
+              );
+            })()}
 
             {/* TAB 2: CHRONOLOGICAL CUSTOMER INTERACTION TIMELINE */}
             {c360Tab === 'timeline' && (
@@ -5492,95 +5420,9 @@ export default function LeadsPage() {
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {customerTimeline.map((it) => {
-                      const channelIcons: Record<string, string> = {
-                        call: '📞',
-                        physical_visit: '🏢',
-                        video_conference: '🎥',
-                        demo: '🎯',
-                        proposal: '📄',
-                        whatsapp: '💬',
-                        email: '✉️',
-                        tender_discussion: '⚖️',
-                        follow_up: '⏰',
-                        service_discussion: '🔧',
-                      };
-                      const icon = channelIcons[it.type] || '💬';
-
-                      return (
-                        <div
-                          key={it.id}
-                          className="p-3 sm:p-3.5 rounded-xl bg-white border border-[#DCD8CE] space-y-2 shadow-2xs hover:border-[#0F5E63] transition-colors"
-                        >
-                          <div className="flex flex-wrap items-center justify-between gap-2">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <span className="text-base">{icon}</span>
-                              <Badge variant="outline" size="sm" className="uppercase font-bold text-[10px]">
-                                {it.type?.replace('_', ' ')}
-                              </Badge>
-                              <span className="text-[11px] text-[#4A5568] font-medium font-mono">
-                                {formatDateIN(it.occurred_on || it.interaction_date || it.created_at)}
-                              </span>
-                            </div>
-                            <div className="text-[10px] text-[#4A5568] sm:text-right">
-                              Employee: <strong className="text-[#14213D]">{it.employee_name || it.created_by_name || 'Executive'}</strong>
-                            </div>
-                          </div>
-
-                          {it.contact_name && (
-                            <div className="text-[10px] text-[#4A5568] flex flex-wrap items-center gap-1">
-                              <User className="h-3 w-3 text-[#4A5568] shrink-0" />
-                              <span>Contact Person: <strong className="text-[#14213D]">{it.contact_name}</strong></span>
-                              {it.contact_mobile && <span className="font-mono">({it.contact_mobile})</span>}
-                            </div>
-                          )}
-
-                          <p className="text-[#14213D] text-xs leading-relaxed font-sans bg-[#FBFAF7] p-2.5 rounded-lg border border-[#DCD8CE]">
-                            {it.remarks || it.notes || 'No discussion notes provided.'}
-                          </p>
-
-                          {it.outcome && (
-                            <div className="text-[11px] text-[#0B4A4E] bg-[#E3EFEE] px-2.5 py-1 rounded-md border border-[#D0E5E3] font-medium">
-                              Outcome: {it.outcome}
-                            </div>
-                          )}
-
-                          {(it.next_action || it.followup_date || it.next_action_date) && (
-                            <div className="flex flex-wrap items-center gap-3 text-[11px] text-[#0F5E63] font-medium pt-0.5">
-                              {it.next_action && (
-                                <div className="flex items-center gap-1.5">
-                                  <ArrowRight className="h-3.5 w-3.5" />
-                                  <span>Next Action: {it.next_action}</span>
-                                </div>
-                              )}
-                              {(it.followup_date || it.next_action_date) && (
-                                <div className="flex items-center gap-1 text-[#4A5568] font-mono text-[10px]">
-                                  <Clock className="h-3 w-3" />
-                                  <span>Target Due: {formatDateIN(it.followup_date || it.next_action_date)}</span>
-                                </div>
-                              )}
-                            </div>
-                          )}
-
-                          {it.attachments && it.attachments.length > 0 && (
-                            <div className="pt-1 flex flex-wrap gap-1.5">
-                              {it.attachments.map((att: any) => (
-                                <a
-                                  key={att.id}
-                                  href={att.file_url}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-[#FBFAF7] border border-[#DCD8CE] text-[10px] text-[#0F5E63] hover:underline"
-                                >
-                                  <Paperclip className="h-3 w-3" />
-                                  <span>{att.file_name}</span>
-                                </a>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })}
+                    {customerTimeline.map((it) => (
+                      <InteractionCard key={it.id} it={it} />
+                    ))}
                   </div>
                 )}
               </div>

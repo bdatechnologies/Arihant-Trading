@@ -123,7 +123,7 @@ export const CardDescription = React.forwardRef<
 >(({ className, ...props }, ref) => (
   <p
     ref={ref}
-    className={twMerge('text-xs text-[#4A5568] font-normal mt-0.5 leading-relaxed', className)}
+    className={twMerge('ui-card-desc text-xs text-[#4A5568] font-normal mt-0.5 leading-relaxed', className)}
     {...props}
   />
 ));

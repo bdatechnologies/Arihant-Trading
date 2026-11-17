@@ -14,7 +14,6 @@ import {
   Button,
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
   InfoCallout,
@@ -29,9 +28,8 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  Tabs,
 } from '@/components/ui';
-import { FactList, ReportFilterBar, ReportNotes, ReportsDenied, ReportsNav, canOpen, downloadCsv, fmtDay, pctText, rateSub, useReport, useReportFilters } from '../_lib/report-ui';
+import { ReportSwitch, PhoneRows, ReportBody, FactList, ReportFilterBar, ReportsDenied, canOpen, downloadCsv, fmtDay, pctText, useReport, useReportFilters } from '../_lib/report-ui';
 
 const GROUP_LABEL: Record<ServiceReportGroupBy, string> = { engineer: 'Engineer', region: 'Region', zone: 'Zone', priority: 'Priority' };
 const dayText = (d: number | null) => (d === null ? '—' : `${d} d`);
@@ -60,7 +58,6 @@ function ServiceReport() {
   if (!allowed) {
     return (
       <>
-        <ReportsNav role={user.role} />
         <ReportsDenied />
       </>
     );
@@ -90,7 +87,6 @@ function ServiceReport() {
           </Button>
         }
       />
-      <ReportsNav role={user.role} />
       <ReportFilterBar filters={filters} territory={data?.filters} />
 
       {error && (
@@ -105,21 +101,19 @@ function ServiceReport() {
       {!data || !s || !c ? (
         loading ? <PageLoader rows={5} label="Building the service report" /> : null
       ) : (
-        <div className={`space-y-6 transition-opacity ${loading ? 'opacity-60' : ''}`} aria-busy={loading}>
-          <StatGrid cols={4} className="gap-3">
-            <StatCard title="Complaints received" value={c.received} subtext={`${c.completed} completed · ${c.closed} closed in the period`} icon={<Wrench className="h-4 w-4" />} variant="primary" />
+        <ReportBody main={[0, 1]} loading={loading}>
+          <StatGrid cols={4} className="report-kpis gap-3">
+            <StatCard title="Complaints received" value={c.received} icon={<Wrench className="h-4 w-4" />} variant="primary" />
             <StatCard
               title="Average closure"
               value={dayText(c.avg_closure_days)}
-              subtext={c.closed ? `Median ${dayText(c.median_closure_days)} · slowest 10 % ${dayText(c.p90_closure_days)}` : 'No tickets closed in this period'}
               icon={<Clock className="h-4 w-4" />}
               variant="primary"
             />
-            <StatCard title="Closed within SLA" value={pctText(c.within_sla.rate)} subtext={rateSub(c.within_sla, 'closed with a deadline')} icon={<ShieldCheck className="h-4 w-4" />} variant="emerald" />
+            <StatCard title="Closed within SLA" value={pctText(c.within_sla.rate)} icon={<ShieldCheck className="h-4 w-4" />} variant="emerald" />
             <StatCard
               title="Repeat complaints"
               value={c.repeats}
-              subtext={c.received ? `${pctText(c.repeat_rate)} of complaints · ${data.repeat_window_days}-day window` : 'No complaints received'}
               icon={<Repeat className="h-4 w-4" />}
               variant={c.repeats > 0 ? 'rose' : 'default'}
             />
@@ -129,7 +123,6 @@ function ServiceReport() {
           <Card>
             <CardHeader className="flex-col items-start gap-0">
               <CardTitle>Service desk right now</CardTitle>
-              <CardDescription>Open tickets as of now, whatever the period.</CardDescription>
             </CardHeader>
             <CardContent>
               <FactList
@@ -151,9 +144,23 @@ function ServiceReport() {
             <Card className="lg:col-span-3">
               <CardHeader className="flex-col items-start gap-0">
                 <CardTitle>Monthly trend</CardTitle>
-                <CardDescription>Complaints received and tickets closed per month, with that month’s average closure time.</CardDescription>
               </CardHeader>
               <CardContent>
+                <PhoneRows
+                  label="Monthly trend"
+                  rows={data.trend.map((t) => ({
+                    key: t.month,
+                    title: monthLabel(t.month),
+                    dim: !t.received && !t.closed && !t.repeats,
+                    sub: t.repeats ? <span className="font-semibold text-[#881337]">{t.repeats} repeat {t.repeats === 1 ? 'complaint' : 'complaints'}</span> : undefined,
+                    figures: [
+                      { label: 'In', value: t.received },
+                      { label: 'Closed', value: t.closed },
+                      { label: 'Avg', value: dayText(t.avg_closure_days) },
+                    ],
+                  }))}
+                />
+                <div className="max-sm:hidden">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -185,7 +192,8 @@ function ServiceReport() {
                     ))}
                   </TableBody>
                 </Table>
-                <p className="mt-2 flex items-center gap-4 text-[11px] text-[#4A5568]">
+              </div>
+                <p className="mt-2 flex items-center gap-4 text-[11px] text-[#4A5568] max-sm:hidden">
                   <span className="inline-flex items-center gap-1.5">
                     <span className="h-2 w-3 rounded-sm bg-[#0F5E63]" aria-hidden /> Received
                   </span>
@@ -200,7 +208,6 @@ function ServiceReport() {
               <Card>
                 <CardHeader className="flex-col items-start gap-0">
                   <CardTitle>Closure time by priority</CardTitle>
-                  <CardDescription>Average hours to close, tickets closed in the period.</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <BarList
@@ -219,7 +226,6 @@ function ServiceReport() {
               <Card>
                 <CardHeader className="flex-col items-start gap-0">
                   <CardTitle>Complaints by problem category</CardTitle>
-                  <CardDescription>Received in the period; repeats in brackets.</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <BarList
@@ -236,10 +242,6 @@ function ServiceReport() {
           <Card>
             <CardHeader className="flex-col items-start gap-0">
               <CardTitle>Repeat complaint hotspots</CardTitle>
-              <CardDescription>
-                Customer equipment with a repeat complaint, or two or more complaints in the period. A repeat is the same customer and serial (else
-                product) within {data.repeat_window_days} days.
-              </CardDescription>
             </CardHeader>
             <CardContent>
               {data.hotspots.length === 0 ? (
@@ -275,27 +277,39 @@ function ServiceReport() {
 
           {/* Engineer / territory / priority breakdown */}
           <Card>
-            <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
+            <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between max-sm:flex-row max-sm:items-center">
+              <div className="min-w-0">
                 <CardTitle>{GROUP_LABEL[groupBy]}-wise breakdown</CardTitle>
-                <CardDescription>Period figures for intake and closures; open and overdue are as of now.</CardDescription>
               </div>
-              <div className="overflow-x-auto custom-scrollbar">
-                <Tabs
-                  variant="segmented"
-                  size="sm"
-                  activeTab={groupBy}
+              <ReportSwitch
+                  label="Group by"
+                  value={groupBy}
                   onChange={(id) => filters.set({ group_by: id === 'engineer' ? null : id })}
-                  tabs={[
+                  options={[
                     { id: 'engineer', label: 'Engineer', icon: <Users className="h-3.5 w-3.5" /> },
                     { id: 'region', label: 'Region', icon: <MapPin className="h-3.5 w-3.5" /> },
                     { id: 'zone', label: 'Zone', icon: <MapIcon className="h-3.5 w-3.5" /> },
                     { id: 'priority', label: 'Priority', icon: <AlertTriangle className="h-3.5 w-3.5" /> },
                   ]}
                 />
-              </div>
             </CardHeader>
             <CardContent>
+              <PhoneRows
+                label={`${GROUP_LABEL[data.group_by]}-wise breakdown`}
+                rows={[...data.breakdown.rows.map((row) => ({ ...row, total: false })), { ...data.breakdown.totals, key: 'total', label: 'Total', detail: null, total: true }].map((row) => ({
+                  key: row.key,
+                  title: row.label,
+                  sub: row.detail || undefined,
+                  total: row.total,
+                  figures: [
+                    { label: 'In', value: row.received },
+                    { label: 'Closed', value: row.closed },
+                    { label: 'Overdue', value: row.overdue, tone: row.overdue > 0 ? ('bad' as const) : undefined },
+                  ],
+                  details: COLUMNS.map((c) => [c.label, c.get(row), c.warn?.(row) ? ('bad' as const) : undefined] as const),
+                }))}
+              />
+              <div className="max-sm:hidden">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -331,15 +345,11 @@ function ServiceReport() {
                   </TableRow>
                 </TableBody>
               </Table>
+            </div>
             </CardContent>
           </Card>
 
-          <ReportNotes>
-            Period {fmtDay(data.period.from)} → {fmtDay(data.period.to)} (IST). Intake counts by the day the complaint was received; closures by the day the
-            ticket was closed. Closure time runs from the complaint received (a back-dated complaint from 09:00 IST that day) to closure — the same rule as
-            the Service Desk’s average closure time. “Right now”, open and overdue figures match the Service Desk tiles for the same territory.
-          </ReportNotes>
-        </div>
+        </ReportBody>
       )}
     </>
   );

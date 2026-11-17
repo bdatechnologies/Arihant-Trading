@@ -68,8 +68,10 @@ export default function AppLayout({
         <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
           <Navbar onOpenCommand={() => setIsCommandOpen(true)} />
           <div className="relative flex-1 min-h-0">
-            <main key={pathname} className="route-enter absolute inset-0 z-10 overflow-y-auto px-4 pt-5 sm:px-6 lg:px-8 lg:pt-6 custom-scrollbar">
-              <div className="mx-auto flex w-full max-w-[1680px] flex-col gap-5">
+            {/* Keyed by route so each page enters fresh — except the reports, whose tabs (reports/layout.tsx) stay put while
+                you switch between them. */}
+            <main key={pathname.startsWith('/reports/') ? '/reports' : pathname} className="route-enter absolute inset-0 z-10 overflow-y-auto px-4 pt-5 sm:px-6 lg:px-8 lg:pt-6 custom-scrollbar">
+              <div className="mx-auto flex w-full max-w-[1680px] flex-col gap-3 sm:gap-5">
             {isUnauthorized ? (
               <div className="max-w-2xl mx-auto my-12 bg-white border border-[#DCD8CE] rounded-[10px] p-8 shadow-xs text-center space-y-5">
                 <div className="h-14 w-14 rounded-[10px] bg-[#FBEBDD] border border-[#9A3412]/30 flex items-center justify-center mx-auto text-[#7C2D12]">

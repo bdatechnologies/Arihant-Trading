@@ -15,7 +15,6 @@ import {
   Button,
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
   InfoCallout,
@@ -31,9 +30,8 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  Tabs,
 } from '@/components/ui';
-import { ReportFilterBar, ReportNotes, ReportsDenied, ReportsNav, canOpen, downloadCsv, fmtDay, money, pctText, useReport, useReportFilters } from '../_lib/report-ui';
+import { ReportSwitch, PhoneRows, ReportFilterBar, ReportsDenied, canOpen, downloadCsv, money, useReport, useReportFilters } from '../_lib/report-ui';
 
 const GROUPS: { id: ExpenseReportGroupBy; label: string; head: string }[] = [
   { id: 'category', label: 'Category', head: 'Category' },
@@ -71,7 +69,6 @@ function ExpenseReport() {
   if (!allowed) {
     return (
       <>
-        <ReportsNav role={user.role} />
         <ReportsDenied />
       </>
     );
@@ -108,7 +105,6 @@ function ExpenseReport() {
           </div>
         }
       />
-      <ReportsNav role={user.role} />
       <ReportFilterBar filters={filters} territory={data?.filters}>
         <div className="lg:w-[220px]">
           <Select label="Approval status" value={STATUS_OPTIONS.includes(status as (typeof STATUS_OPTIONS)[number]) ? status : ''} onChange={(e) => filters.set({ statuses: e.target.value || null })}>
@@ -135,30 +131,27 @@ function ExpenseReport() {
         loading ? <PageLoader rows={5} label="Building the expense report" /> : null
       ) : (
         <div className={`space-y-6 transition-opacity ${loading ? 'opacity-60' : ''}`} aria-busy={loading}>
-          <StatGrid cols={4} className="gap-3">
+          <StatGrid cols={4} className="report-kpis gap-3">
             <StatCard
               title="Claimed"
               value={money(t.claimed)}
-              subtext={`${t.claims} claims · ${t.employees} people${t.avg_per_claim === null ? '' : ` · average ${formatINR(t.avg_per_claim)}`}`}
               icon={<IndianRupee className="h-4 w-4" />}
               variant="primary"
             />
             <StatCard
               title="Approved"
               value={money(t.approved)}
-              subtext={t.approval_rate === null ? 'No claims fully reviewed yet' : `${pctText(t.approval_rate)} of reviewed claims`}
               icon={<BadgeCheck className="h-4 w-4" />}
               variant="emerald"
             />
-            <StatCard title="Pending" value={money(t.pending)} subtext="In review, clarification or awaiting payment" icon={<Clock className="h-4 w-4" />} variant={t.pending > 0 ? 'amber' : 'default'} />
-            <StatCard title="Paid" value={money(t.paid)} subtext={`Rejected or withdrawn ${money(t.rejected)}`} icon={<ListChecks className="h-4 w-4" />} />
+            <StatCard title="Pending" value={money(t.pending)} icon={<Clock className="h-4 w-4" />} variant={t.pending > 0 ? 'amber' : 'default'} />
+            <StatCard title="Paid" value={money(t.paid)} icon={<ListChecks className="h-4 w-4" />} />
           </StatGrid>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>
               <CardHeader className="flex-col items-start gap-0">
                 <CardTitle>Where the money sits</CardTitle>
-                <CardDescription>Claimed amount by approval stage — the stages add up to the total claimed.</CardDescription>
               </CardHeader>
               <CardContent>
                 <BarList
@@ -172,7 +165,6 @@ function ExpenseReport() {
             <Card>
               <CardHeader className="flex-col items-start gap-0">
                 <CardTitle>Category mix</CardTitle>
-                <CardDescription>Claimed amount per expense category.</CardDescription>
               </CardHeader>
               <CardContent>
                 <BarList
@@ -187,24 +179,39 @@ function ExpenseReport() {
 
           <Card>
             <CardHeader className="gap-3">
-              <div>
+              <div className="min-w-0">
                 <CardTitle>By {head.toLowerCase()}</CardTitle>
-                <CardDescription>Pick how to break the expenses down. Every view adds up to the same total.</CardDescription>
               </div>
-              <div className="overflow-x-auto custom-scrollbar">
-                <Tabs
-                  variant="segmented"
-                  size="sm"
-                  activeTab={groupBy}
-                  onChange={(id) => filters.set({ group_by: id === 'category' ? null : id })}
-                  tabs={GROUPS.map((g) => ({ id: g.id, label: g.label, icon: g.id === 'date' || g.id === 'month' ? <CalendarDays className="h-3.5 w-3.5" /> : undefined }))}
-                />
-              </div>
+              <ReportSwitch
+                label="Group by"
+                value={groupBy}
+                onChange={(id) => filters.set({ group_by: id === 'category' ? null : id })}
+                options={GROUPS.map((g) => ({ id: g.id, label: g.label, icon: g.id === 'date' || g.id === 'month' ? <CalendarDays className="h-3.5 w-3.5" /> : undefined }))}
+              />
             </CardHeader>
             <CardContent>
               {data.rows.length === 0 ? (
                 <p className="py-6 text-center text-xs text-[#6B7280]">No expenses match this period and filter.</p>
               ) : (
+                <>
+                <PhoneRows
+                  label={`By ${head.toLowerCase()}`}
+                  rows={[
+                    ...data.rows.map((r) => ({ ...r, total: false })),
+                    { key: 'total', label: 'Total', detail: null, ...t, total: true },
+                  ].map((r) => ({
+                    key: r.key,
+                    title: r.label,
+                    sub: r.detail || (r.total ? undefined : `${r.claims} ${r.claims === 1 ? 'claim' : 'claims'} · ${r.employees} ${r.employees === 1 ? 'person' : 'people'}`),
+                    total: r.total,
+                    figures: [
+                      { label: 'Claimed', value: money(r.claimed) },
+                      { label: 'Pending', value: money(r.pending), tone: r.pending > 0 ? ('warn' as const) : undefined },
+                    ],
+                    details: COLUMNS.map((c) => [c.label, c.money ? formatINR(c.get(r)) : c.get(r)] as const),
+                  }))}
+                />
+                <div className="max-sm:hidden">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -243,15 +250,12 @@ function ExpenseReport() {
                     </TableRow>
                   </TableBody>
                 </Table>
+              </div>
+                </>
               )}
             </CardContent>
           </Card>
 
-          <ReportNotes>
-            Period {fmtDay(data.period.from)} → {fmtDay(data.period.to)} (IST), by expense date; draft claims are never included. The same claim visibility
-            as Expense Reports applies, so these totals match that register and its Tally export for the same dates and filters. Lines and claims are
-            counted once each in the total even when a claim spans several groups.
-          </ReportNotes>
         </div>
       )}
     </>

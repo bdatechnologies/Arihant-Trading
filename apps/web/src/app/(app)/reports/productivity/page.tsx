@@ -16,7 +16,6 @@ import {
   Button,
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
   InfoCallout,
@@ -33,7 +32,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui';
-import { FactList, ReportFilterBar, ReportNotes, ReportsDenied, ReportsNav, canOpen, downloadCsv, fmtDay, money, pctText, useReport, useReportFilters } from '../_lib/report-ui';
+import { PhoneRows, ReportBody, FactList, ReportFilterBar, ReportsDenied, canOpen, downloadCsv, money, pctText, useReport, useReportFilters } from '../_lib/report-ui';
 
 const roleLabel = (r: string) => {
   const t = r.replace(/_/g, ' ');
@@ -89,7 +88,6 @@ function ProductivityReport() {
   if (!allowed) {
     return (
       <>
-        <ReportsNav role={user.role} />
         <ReportsDenied />
       </>
     );
@@ -120,7 +118,6 @@ function ProductivityReport() {
           </div>
         }
       />
-      <ReportsNav role={user.role} />
       <ReportFilterBar filters={filters} territory={data?.filters}>
         <div className="lg:w-[200px]">
           <Select label="Role" value={data?.role ?? ''} onChange={(e) => filters.set({ role: e.target.value || null })}>
@@ -146,21 +143,19 @@ function ProductivityReport() {
       {!data || !t ? (
         loading ? <PageLoader rows={5} label="Building the productivity report" /> : null
       ) : (
-        <div className={`space-y-6 transition-opacity ${loading ? 'opacity-60' : ''}`} aria-busy={loading}>
-          <StatGrid cols={4} className="gap-3">
+        <ReportBody main={[0, 2]} loading={loading}>
+          <StatGrid cols={4} className="report-kpis gap-3">
             <StatCard
               title={data.scope === 'all' ? 'Employees' : 'Your team'}
               value={t.employees}
-              subtext={t.needing_attention ? `${t.needing_attention} need attention` : 'No one needs attention'}
               icon={<Users className="h-4 w-4" />}
               variant="primary"
             />
-            <StatCard title="On-time completion" value={pctText(t.tasks.on_time_pct)} subtext={`${t.tasks.completed} of ${t.tasks.assigned} tasks due were completed`} icon={<CheckCircle2 className="h-4 w-4" />} variant="emerald" />
-            <StatCard title="Overdue now" value={t.tasks.overdue_now} subtext={`${t.tasks.no_update} open tasks without updates`} icon={<Timer className="h-4 w-4" />} variant={t.tasks.overdue_now > 0 ? 'rose' : 'default'} />
+            <StatCard title="On-time completion" value={pctText(t.tasks.on_time_pct)} icon={<CheckCircle2 className="h-4 w-4" />} variant="emerald" />
+            <StatCard title="Overdue now" value={t.tasks.overdue_now} icon={<Timer className="h-4 w-4" />} variant={t.tasks.overdue_now > 0 ? 'rose' : 'default'} />
             <StatCard
               title="Unapproved delays"
               value={t.tasks.unapproved_delays}
-              subtext={`${t.tasks.approved_blockers} more excused by approved blockers`}
               icon={<AlertTriangle className="h-4 w-4" />}
               variant={t.tasks.unapproved_delays > 0 ? 'amber' : 'default'}
             />
@@ -169,7 +164,6 @@ function ProductivityReport() {
           <Card>
             <CardHeader className="flex-col items-start gap-0">
               <CardTitle>Work logged in the period</CardTitle>
-              <CardDescription>Across everyone shown — counted from the records each module already holds.</CardDescription>
             </CardHeader>
             <CardContent>
               <FactList
@@ -193,12 +187,46 @@ function ProductivityReport() {
           <Card>
             <CardHeader className="flex-col items-start gap-0">
               <CardTitle>By employee</CardTitle>
-              <CardDescription>People needing attention first. Task columns are the Team Performance figures for the same period.</CardDescription>
             </CardHeader>
             <CardContent>
               {data.rows.length === 0 ? (
                 <p className="py-6 text-center text-xs text-[#6B7280]">No employees in this scope.</p>
               ) : (
+                <>
+                <PhoneRows
+                  label="By employee"
+                  rows={[
+                    ...data.rows.map((r) => ({
+                      key: r.employee_id,
+                      title: (
+                        <>
+                          {r.name}
+                          {!r.is_active && <span className="ml-1 text-[10px] font-normal text-[#6B7280]">(inactive)</span>}
+                        </>
+                      ),
+                      sub: [roleLabel(r.role), r.region_name].filter(Boolean).join(' · '),
+                      meta: r.attention.length ? <span className="font-semibold text-[#9A3412]">{r.attention.join(' · ')}</span> : undefined,
+                      figures: [
+                        { label: 'Due', value: r.tasks.assigned },
+                        { label: 'On time', value: pctText(r.tasks.on_time_pct) },
+                        { label: 'Overdue', value: r.tasks.overdue_now, tone: r.tasks.overdue_now > 0 ? ('bad' as const) : undefined },
+                      ],
+                      details: COLUMNS.flatMap((g) => g.cols.map((c) => [`${g.name} · ${c.label}`, c.get(r), c.warn?.(r) ? ('bad' as const) : undefined] as const)),
+                    })),
+                    {
+                      key: 'total',
+                      total: true,
+                      title: 'Total',
+                      sub: `${t.needing_attention} ${t.needing_attention === 1 ? 'person needs' : 'people need'} attention`,
+                      figures: [
+                        { label: 'Due', value: t.tasks.assigned },
+                        { label: 'On time', value: pctText(t.tasks.on_time_pct) },
+                        { label: 'Overdue', value: t.tasks.overdue_now, tone: t.tasks.overdue_now > 0 ? ('bad' as const) : undefined },
+                      ],
+                    },
+                  ]}
+                />
+                <div className="max-sm:hidden">
                 <Table>
                   <TableHeader>
                     <TableRow>
@@ -269,17 +297,13 @@ function ProductivityReport() {
                     </TableRow>
                   </TableBody>
                 </Table>
+              </div>
+                </>
               )}
             </CardContent>
           </Card>
 
-          <p className="text-xs text-[#4A5568]">This report is evidence for a manager’s review. It does not score people or recommend pay decisions.</p>
-          <ReportNotes>
-            Period {fmtDay(data.period.from)} → {fmtDay(data.period.to)} (IST). Task figures use Module 8’s delay rules (a repeated-delay flag means{' '}
-            {data.settings.repeated_delay_threshold}+ unexcused late completions within {data.settings.repeated_delay_window_days} days). Activity counts each
-            record under the person who owns it, on the date its module reports by.
-          </ReportNotes>
-        </div>
+        </ReportBody>
       )}
     </>
   );

@@ -92,6 +92,9 @@ function rowOf(el: HTMLElement): HTMLElement | null {
  * rows inside dialogs are ignored.
  */
 export function useActionDock(ref: React.RefObject<HTMLElement | null>, priority = 1) {
+  // Re-run when the dock is released, so a row that stays mounted (the report tabs, while one report replaces another)
+  // takes the page actions back instead of leaving them as a floating pill.
+  const free = useSlots().dock === null;
   useEffect(() => {
     const el = ref.current;
     const row = el && rowOf(el);
@@ -100,7 +103,7 @@ export function useActionDock(ref: React.RefObject<HTMLElement | null>, priority
     return () => {
       if (slots.dock === row) patch({ dock: null, dockPriority: 0 });
     };
-  }, [ref, priority]);
+  }, [ref, priority, free]);
 }
 
 /**

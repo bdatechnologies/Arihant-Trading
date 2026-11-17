@@ -401,7 +401,7 @@ function ExpensesHub() {
           aria-label={`Open ${c.claim_number}`}
           onClick={(e) => !(e.target as HTMLElement).closest('input, label, button, a') && setOpenId(c.id)}
           onKeyDown={(e) => e.key === 'Enter' && e.target === e.currentTarget && setOpenId(c.id)}
-          className="group flex cursor-pointer flex-col gap-3 rounded-[14px] border border-[#DCD8CE] bg-white p-4 shadow-2xs transition-colors hover:border-[#0F5E63] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0F5E63]/30 active:scale-[0.995]"
+          className="group flex cursor-pointer flex-col gap-2 rounded-[14px] border border-[#DCD8CE] bg-white p-3 shadow-2xs sm:gap-3 sm:p-4 transition-colors hover:border-[#0F5E63] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#0F5E63]/30 active:scale-[0.995]"
         >
           <div className="flex items-start justify-between gap-2">
             <div className="flex min-w-0 items-center gap-2">
@@ -415,8 +415,8 @@ function ExpensesHub() {
           </div>
 
           <div className="min-w-0 space-y-0.5">
-            <h3 className="line-clamp-2 font-serif text-base font-semibold leading-snug text-[#14213D]">{c.title}</h3>
-            {c.remarks && <p className="line-clamp-2 text-xs italic text-[#4A5568]">“{c.remarks}”</p>}
+            <h3 className="line-clamp-2 font-serif text-[15px] font-semibold leading-snug text-[#14213D] sm:text-base">{c.title}</h3>
+            {c.remarks && <p className="line-clamp-2 text-xs italic text-[#4A5568] max-sm:hidden">“{c.remarks}”</p>}
           </div>
 
           {!mine && (
@@ -441,7 +441,7 @@ function ExpensesHub() {
             </div>
           </div>
 
-          <dl className="grid grid-cols-2 gap-x-4 gap-y-2">
+          <dl className="grid grid-cols-2 gap-x-4 gap-y-2 max-sm:hidden">
             {fact('Period', c.period_from ? <><DateText value={c.period_from} /> – <DateText value={c.period_to} /></> : null)}
             {fact('Expenses', [linesLabel(c), c.categories].filter(Boolean).join(' · '))}
             {fact('Trip', tripLabel(c))}

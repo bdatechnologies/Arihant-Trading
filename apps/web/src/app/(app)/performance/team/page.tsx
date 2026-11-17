@@ -797,31 +797,27 @@ function Accountability() {
                       </div>
 
                       <div className="md:hidden space-y-3">
-                        <ul className="space-y-2.5">
+                        {/* Phones: one row per person — the two figures that need action; tap for everything */}
+                        <ul className="divide-y divide-[#ECE9E2] overflow-hidden rounded-[14px] border border-[#DCD8CE] bg-white">
                           {employees.map((e) => (
-                            <li key={e.employee_id} className={`rounded-[14px] border border-[#DCD8CE] p-3 space-y-2.5 ${e.is_active ? 'bg-white' : 'bg-[#FBFAF7]'}`}>
-                              <div className="flex items-start justify-between gap-2">
-                                <div className="min-w-0">
-                                  <p className="text-sm font-semibold text-[#14213D] break-words">{e.name}</p>
-                                  <p className="text-[11px] text-[#4A5568] capitalize">{[roleLabel(e.role), e.department].filter(Boolean).join(' · ')}</p>
-                                </div>
-                                <div className="flex flex-wrap justify-end gap-1">
-                                  {employeeChips(e)}
-                                </div>
-                              </div>
-                              <dl className="grid grid-cols-3 gap-x-2 gap-y-2">
-                                {TABLE_COLS.map((tc) => COLUMNS.find((x) => x.key === tc.key)!).map((c) => (
-                                  <div key={c.key} className="min-w-0">
-                                    <dt className="text-[10px] uppercase tracking-wide text-[#4A5568] truncate" title={c.hint}>
-                                      {c.label}
-                                    </dt>
-                                    <dd className="text-sm">{cellFor(e, c)}</dd>
-                                  </div>
-                                ))}
-                              </dl>
-                              <Button size="xs" variant="secondary" fullWidth className="h-10" rightIcon={<ChevronRight className="h-3.5 w-3.5" />} onClick={() => setDrillId(e.employee_id)}>
-                                Details
-                              </Button>
+                            <li key={e.employee_id} className={e.is_active ? '' : 'bg-[#FBFAF7]'}>
+                              <button type="button" onClick={() => setDrillId(e.employee_id)} className="flex w-full items-center gap-3 px-3 py-3 text-left active:bg-[#FBFAF7]">
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate text-[14px] font-semibold text-[#14213D]">{e.name}</span>
+                                  <span className="block truncate text-[11px] capitalize text-[#4A5568]">{[roleLabel(e.role), e.department].filter(Boolean).join(' · ')}</span>
+                                  <span className="mt-1 flex flex-wrap gap-1 empty:hidden">{employeeChips(e)}</span>
+                                </span>
+                                {(['overdue', 'no_update'] as const).map((k) => {
+                                  const c = COLUMNS.find((x) => x.key === k)!;
+                                  return (
+                                    <span key={k} className="shrink-0 text-right">
+                                      <span className="block text-[13px]">{cellFor(e, c)}</span>
+                                      <span className="block text-[9px] font-medium uppercase tracking-wide text-[#6B7280]">{TABLE_COLS.find((t) => t.key === k)?.label}</span>
+                                    </span>
+                                  );
+                                })}
+                                <ChevronRight className="h-4 w-4 shrink-0 text-[#6B7280]" aria-hidden />
+                              </button>
                             </li>
                           ))}
                         </ul>

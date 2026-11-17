@@ -14,7 +14,6 @@ import {
   Button,
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
   InfoCallout,
@@ -29,17 +28,16 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-  Tabs,
 } from '@/components/ui';
 import {
+  ReportSwitch,
+  PhoneRows,
+  ReportBody,
   FactList,
   ReportFilterBar,
-  ReportNotes,
   ReportsDenied,
-  ReportsNav,
   canOpen,
   downloadCsv,
-  fmtDay,
   money,
   pctText,
   rateSub,
@@ -112,7 +110,6 @@ function PipelineReport() {
   if (!allowed) {
     return (
       <>
-        <ReportsNav role={user.role} />
         <ReportsDenied />
       </>
     );
@@ -144,7 +141,6 @@ function PipelineReport() {
           </Button>
         }
       />
-      <ReportsNav role={user.role} />
       <ReportFilterBar filters={filters} territory={data?.filters} />
 
       {error && (
@@ -159,24 +155,22 @@ function PipelineReport() {
       {!data || !r || !t ? (
         loading ? <PageLoader rows={5} label="Building the pipeline report" /> : null
       ) : (
-        <div className={`space-y-6 transition-opacity ${loading ? 'opacity-60' : ''}`} aria-busy={loading}>
-          <StatGrid cols={4} className="gap-3">
-            <StatCard title="Lead conversion" value={pctText(r.lead_conversion.rate)} subtext={rateSub(r.lead_conversion, 'leads created')} icon={<Target className="h-4 w-4" />} variant="primary" />
-            <StatCard title="Tender win rate" value={pctText(r.tender_win.rate)} subtext={rateSub(r.tender_win, 'tenders decided')} icon={<Award className="h-4 w-4" />} variant="primary" />
+        <ReportBody main={[0, 1]} loading={loading}>
+          <StatGrid cols={4} className="report-kpis gap-3">
+            <StatCard title="Lead conversion" value={pctText(r.lead_conversion.rate)} icon={<Target className="h-4 w-4" />} variant="primary" />
+            <StatCard title="Tender win rate" value={pctText(r.tender_win.rate)} icon={<Award className="h-4 w-4" />} variant="primary" />
             <StatCard
               title="Open pipeline"
               value={money(data.values.open_leads)}
-              subtext={`Open leads now · proposals ${money(data.values.open_proposals)} · live bids ${money(data.values.live_tenders)}`}
               icon={<Wallet className="h-4 w-4" />}
             />
-            <StatCard title="Won in period" value={money(data.values.tenders_won)} subtext={`Tenders won · proposals converted ${money(data.values.proposals_converted)}`} icon={<TrendingUp className="h-4 w-4" />} variant="emerald" />
+            <StatCard title="Won in period" value={money(data.values.tenders_won)} icon={<TrendingUp className="h-4 w-4" />} variant="emerald" />
           </StatGrid>
 
           <div className="grid gap-4 lg:grid-cols-2">
             <Card>
               <CardHeader className="flex-col items-start gap-0">
                 <CardTitle>Conversion at each step</CardTitle>
-                <CardDescription>Share of each step that moved on in the period.</CardDescription>
               </CardHeader>
               <CardContent>
                 <BarList
@@ -199,7 +193,6 @@ function PipelineReport() {
             <Card>
               <CardHeader className="flex-col items-start gap-0">
                 <CardTitle>Lead journey</CardTitle>
-                <CardDescription>Of the leads created in the period, how many reached each step (a lead can skip one).</CardDescription>
               </CardHeader>
               <CardContent>
                 <BarList
@@ -222,18 +215,14 @@ function PipelineReport() {
             <Card>
               <CardHeader className="flex-col items-start gap-0">
                 <CardTitle>Pipeline by stage</CardTitle>
-                <CardDescription>{mod ? `${mod.period_basis}, by current stage. Closing stages are marked ●.` : ''}</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="overflow-x-auto custom-scrollbar">
-                  <Tabs
-                    variant="segmented"
-                    size="sm"
-                    activeTab={moduleTab}
-                    onChange={(id) => setModuleTab(id as PipelineModuleKey)}
-                    tabs={data.modules.map((m) => ({ id: m.key, label: m.label, count: m.total }))}
-                  />
-                </div>
+                <ReportSwitch
+                  label="Records"
+                  value={moduleTab}
+                  onChange={(id) => setModuleTab(id as PipelineModuleKey)}
+                  options={data.modules.map((m) => ({ id: m.key, label: m.label, count: m.total }))}
+                />
                 {mod && (
                   <>
                     <BarList
@@ -259,7 +248,6 @@ function PipelineReport() {
             <Card>
               <CardHeader className="flex-col items-start gap-0">
                 <CardTitle>Tender reporting</CardTitle>
-                <CardDescription>Identified in the period, by category; submitted and decided on their own dates.</CardDescription>
               </CardHeader>
               <CardContent>
                 <FactList
@@ -282,17 +270,15 @@ function PipelineReport() {
 
           {/* Zone / region / salesperson breakdown */}
           <Card>
-            <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
+            <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between max-sm:flex-row max-sm:items-center">
+              <div className="min-w-0">
                 <CardTitle>{GROUP_LABEL[groupBy]}-wise breakdown</CardTitle>
-                <CardDescription>Each record counts once, under its owner and its customer’s territory, so rows add up to the total.</CardDescription>
               </div>
-              <Tabs
-                variant="segmented"
-                size="sm"
-                activeTab={groupBy}
+              <ReportSwitch
+                label="Group by"
+                value={groupBy}
                 onChange={(id) => filters.set({ group_by: id === 'zone' ? null : id })}
-                tabs={[
+                options={[
                   { id: 'zone', label: 'Zone', icon: <MapIcon className="h-3.5 w-3.5" /> },
                   { id: 'region', label: 'Region', icon: <MapPin className="h-3.5 w-3.5" /> },
                   { id: 'salesperson', label: 'Salesperson', icon: <Users className="h-3.5 w-3.5" /> },
@@ -300,6 +286,34 @@ function PipelineReport() {
               />
             </CardHeader>
             <CardContent>
+              <PhoneRows
+                label={`${GROUP_LABEL[data.group_by]}-wise breakdown`}
+                rows={[
+                  ...data.breakdown.rows.map((row) => ({
+                    key: row.key,
+                    title: row.label,
+                    sub: data.group_by !== 'zone' ? [data.group_by === 'salesperson' ? row.region_name : null, row.zone_name].filter(Boolean).join(' · ') || undefined : undefined,
+                    figures: [
+                      { label: 'Leads', value: row.leads_created },
+                      { label: 'Conv.', value: pctText(row.lead_conversion_rate) },
+                      { label: 'Open', value: money(row.open_lead_value) },
+                    ],
+                    details: COLUMNS.flatMap((g) => g.cols.map((c) => [`${g.name} · ${c.label}`, c.get(row)] as const)),
+                  })),
+                  {
+                    key: 'total',
+                    total: true,
+                    title: 'Total',
+                    figures: [
+                      { label: 'Leads', value: data.breakdown.totals.leads_created },
+                      { label: 'Conv.', value: pctText(data.breakdown.totals.lead_conversion_rate) },
+                      { label: 'Open', value: money(data.breakdown.totals.open_lead_value) },
+                    ],
+                    details: COLUMNS.flatMap((g) => g.cols.map((c) => [`${g.name} · ${c.label}`, c.get(data.breakdown.totals)] as const)),
+                  },
+                ]}
+              />
+              <div className="max-sm:hidden">
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -352,21 +366,20 @@ function PipelineReport() {
                   </TableRow>
                 </TableBody>
               </Table>
+            </div>
             </CardContent>
           </Card>
 
           <Card>
-            <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div>
+            <CardHeader className="gap-3 sm:flex-row sm:items-center sm:justify-between max-sm:flex-row max-sm:items-center">
+              <div className="min-w-0">
                 <CardTitle>Why we lost</CardTitle>
-                <CardDescription>Top reasons recorded in the period.</CardDescription>
               </div>
-              <Tabs
-                variant="segmented"
-                size="sm"
-                activeTab={lossTab}
+              <ReportSwitch
+                label="Lost"
+                value={lossTab}
                 onChange={(id) => setLossTab(id as LossKey)}
-                tabs={LOSS_CARDS.map((c) => ({ id: c.key, label: c.title, count: data.loss_reasons[c.key].reduce((n, x) => n + x.count, 0) }))}
+                options={LOSS_CARDS.map((c) => ({ id: c.key, label: c.title, count: data.loss_reasons[c.key].reduce((n, x) => n + x.count, 0) }))}
               />
             </CardHeader>
             <CardContent>
@@ -379,13 +392,7 @@ function PipelineReport() {
             </CardContent>
           </Card>
 
-          <ReportNotes>
-            Period {fmtDay(data.period.from)} → {fmtDay(data.period.to)} (IST). Leads count by created date, visits by planned date, demos by the date
-            held, proposals by request / sent / outcome date and tenders by identified / submitted / result date — the same rules as Salesperson &amp;
-            Regional Performance, so a rate here matches that page. Open lead, proposal and live tender values are as of now. Rates show “—” when there is
-            nothing to divide by.
-          </ReportNotes>
-        </div>
+        </ReportBody>
       )}
     </>
   );

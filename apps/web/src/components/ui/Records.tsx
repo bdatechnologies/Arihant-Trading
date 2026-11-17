@@ -424,13 +424,46 @@ const ListRow: React.FC<{ item: RecordItem; show: { owner: boolean; due: boolean
   );
 };
 
-/** Phones: one card per record — code + badges, title, context, status, date and owner, then the actions. */
+/** Phones: the due date as one short phrase ("28/11/2026 · in 11 days"), terracotta once it is due. */
+const DueText: React.FC<{ item: RecordItem }> = ({ item }) => {
+  if (!item.due?.date) return null;
+  const n = daysFromToday(item.due.date);
+  const hint = item.due.done || n === null ? null : n < 0 ? `${-n}d overdue` : n === 0 ? 'today' : n === 1 ? 'tomorrow' : `in ${n}d`;
+  return (
+    <span className={twMerge('whitespace-nowrap font-mono', !item.due.done && n !== null && n <= 0 ? 'font-semibold text-[#9A3412]' : '')}>
+      {shortDate(item.due.date)}
+      {hint && ` · ${hint}`}
+    </span>
+  );
+};
+
+/** Phones: a compact action button on the record's own line (the record row itself opens the details). */
+const RowAction: React.FC<{ action?: RecordAction }> = ({ action }) =>
+  action ? (
+    <button
+      type="button"
+      disabled={action.disabled}
+      onClick={(e) => {
+        e.stopPropagation();
+        action.onClick?.();
+      }}
+      className="inline-flex h-9 shrink-0 items-center gap-1 rounded-lg bg-[#0F5E63] px-3 text-xs font-semibold text-white hover:bg-[#0B4A4E] disabled:opacity-50"
+    >
+      <span className="max-w-[9rem] truncate">{action.label}</span>
+      <ArrowRight className="h-3.5 w-3.5 shrink-0" />
+    </button>
+  ) : null;
+
+/**
+ * Phones: one record as a plain row in a divided list — title and value, one muted context line, then status, date
+ * and owner with the main action beside them. Three short lines instead of a full card per record.
+ */
 const ListCard: React.FC<{ item: RecordItem }> = ({ item }) => {
   const open = useOpen(item);
-  const context = contextLine(item);
+  const context = [item.code && item.code !== item.title ? item.code : null, contextLine(item)].filter(Boolean).join(' · ');
   return (
-    <Card
-      className={twMerge('space-y-2.5 p-4', isOverdue(item) && 'border-l-[3px] border-l-[#9A3412]', open && 'cursor-pointer')}
+    <div
+      className={twMerge('flex flex-col gap-1.5 px-3 py-3', isOverdue(item) && 'border-l-[3px] border-l-[#9A3412] pl-2.5', open && 'cursor-pointer active:bg-[#FBFAF7]')}
       onClick={open}
       role={open ? 'button' : undefined}
       tabIndex={open ? 0 : undefined}
@@ -442,34 +475,54 @@ const ListCard: React.FC<{ item: RecordItem }> = ({ item }) => {
         }
       }}
     >
-      <div className="min-w-0">
-        <div className="flex items-start justify-between gap-2">
-          {item.code && item.code !== item.title ? <span className="min-w-0 break-all font-mono text-xs font-semibold text-[#0F5E63]">{item.code}</span> : <span />}
-          <span className="flex shrink-0 flex-wrap justify-end gap-1">
-            <BadgeRow item={item} />
-          </span>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="truncate text-[14px] font-semibold text-[#14213D]">{item.title}</div>
+          {context && <div className="truncate text-[11px] text-[#4A5568]">{context}</div>}
         </div>
-        <div className="mt-0.5 line-clamp-2 font-medium text-[#14213D]">{item.title}</div>
-        {context && <div className="truncate text-[11px] text-[#4A5568]">{context}</div>}
+        {item.value && <span className="shrink-0 font-mono text-[13px] font-semibold text-[#14213D]">{item.value}</span>}
       </div>
-      <div className="flex flex-wrap items-center gap-1">
-        {item.status && <Chip tone={item.status.tone}>{item.status.label}</Chip>}
-        {item.value && <span className="ml-auto font-mono text-sm font-semibold text-[#14213D]">{item.value}</span>}
-      </div>
-      <div className="flex items-end justify-between gap-3">
-        <DueCell item={item} />
-        {item.owner && <span className="min-w-0 truncate text-right text-xs text-[#4A5568]">{item.owner}</span>}
+      <div className="flex items-center gap-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#4A5568]">
+          {item.status && <Chip tone={item.status.tone}>{item.status.label}</Chip>}
+          <BadgeRow item={item} />
+          <DueText item={item} />
+          {item.owner && <span className="min-w-0 truncate">{item.owner}</span>}
+        </div>
+        {(item.primary || item.quick?.length) && (
+          <div className="flex shrink-0 items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+            {item.quick?.map((a) => (
+              <button
+                key={a.label}
+                type="button"
+                aria-label={a.label}
+                title={a.label}
+                disabled={a.disabled}
+                onClick={() => a.onClick?.()}
+                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-[#C9C4B8] bg-white text-[#14213D] disabled:opacity-40 [&>svg]:h-4 [&>svg]:w-4"
+              >
+                {a.icon ?? <span className="text-[10px] font-semibold">{a.label.slice(0, 2)}</span>}
+              </button>
+            ))}
+            <RowAction action={item.primary} />
+          </div>
+        )}
       </div>
       {item.extra}
-      {(item.primary || item.quick?.length) && (
-        <div className="flex flex-wrap gap-2 pt-1" onClick={(e) => e.stopPropagation()}>
-          <Quick actions={item.quick} />
-          <Primary action={item.primary} />
-        </div>
-      )}
-    </Card>
+    </div>
   );
 };
+
+/** Phones: the records of a register as one divided list (no card per record). */
+const PhoneList: React.FC<{ items: RecordItem[] }> = ({ items }) => (
+  <ul className="rec-phone-list divide-y divide-[#ECE9E2] overflow-hidden rounded-[14px] border border-[#DCD8CE] bg-white md:hidden">
+    {items.map((i) => (
+      <li key={i.key}>
+        <ListCard item={i} />
+      </li>
+    ))}
+  </ul>
+);
 
 /** The task module's list layout for any register: table from tablet up (most urgent first), cards on phones. */
 export const RecordList: React.FC<{ items: RecordItem[]; empty?: React.ReactNode; sort?: boolean }> = ({ items, empty, sort = true }) => {
@@ -505,13 +558,7 @@ export const RecordList: React.FC<{ items: RecordItem[]; empty?: React.ReactNode
           </TableBody>
         </Table>
       </div>
-      <ul className="space-y-3 md:hidden">
-        {list.map((i) => (
-          <li key={i.key}>
-            <ListCard item={i} />
-          </li>
-        ))}
-      </ul>
+      <PhoneList items={list} />
     </>
   );
 };
@@ -552,13 +599,7 @@ export const formatDateTimeIN = (date: string | number | Date | null | undefined
 export const RecordTable: React.FC<{ items: RecordItem[]; children: React.ReactNode }> = ({ items, children }) => (
   <>
     <div className="hidden md:block">{children}</div>
-    <ul className="space-y-3 md:hidden">
-      {items.map((i) => (
-        <li key={i.key}>
-          <ListCard item={i} />
-        </li>
-      ))}
-    </ul>
+    <PhoneList items={items} />
   </>
 );
 

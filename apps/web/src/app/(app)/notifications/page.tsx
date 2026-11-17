@@ -393,11 +393,11 @@ export default function NotificationsPage() {
                     : 'bg-[#FBFAF7]/70 border-[#ECE9E2]'
                 }`}
               >
-                <div className="flex flex-col sm:flex-row items-start justify-between gap-3 sm:gap-4">
-                  <div className="flex items-start space-x-3 min-w-0 flex-1">
+                <div className="flex flex-col sm:flex-row items-start justify-between gap-2 sm:gap-4">
+                  <div className="flex items-start min-w-0 flex-1 sm:space-x-3">
                     {/* Visual Unread / Type Indicator */}
                     <div
-                      className={`p-2 rounded-lg shrink-0 mt-0.5 ${
+                      className={`p-2 rounded-lg shrink-0 mt-0.5 max-sm:hidden ${
                         !n.is_read
                           ? 'bg-[#FBEBDD] text-[#9A3412] border border-[#9A3412]/30 shadow-2xs'
                           : 'bg-[#FBFAF7] text-[#5E6A7C] border border-[#DCD8CE]'
@@ -408,7 +408,8 @@ export default function NotificationsPage() {
 
                     <div className="space-y-1.5 min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        {getTypeBadge(n.type)}
+                        {/* phones: the type shows once, as the chip beside the time */}
+                        <span className="max-sm:hidden">{getTypeBadge(n.type)}</span>
                         <span
                           className={`text-sm min-w-0 max-w-full break-words ${
                             !n.is_read
@@ -420,14 +421,14 @@ export default function NotificationsPage() {
                         </span>
                         {!n.is_read && (
                           <span
-                            className="h-2 w-2 rounded-full bg-[#B42318] inline-block shrink-0 animate-pulse"
+                            className="h-2 w-2 rounded-full bg-[#B42318] inline-block shrink-0 animate-pulse max-sm:hidden"
                             title="Unread notification"
                           />
                         )}
                       </div>
 
                       {content && (
-                        <p className="text-xs text-[#4A5568] leading-relaxed break-words">
+                        <p className="text-xs text-[#4A5568] leading-relaxed break-words max-sm:line-clamp-2">
                           {content}
                         </p>
                       )}

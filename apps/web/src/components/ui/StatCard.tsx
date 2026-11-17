@@ -87,7 +87,7 @@ export const StatCard: React.FC<StatCardProps> = ({
         )}
 
         {subtext && (
-          <span className="text-xs text-[#4A5568] mt-1.5 block font-medium">
+          <span className="ui-stat-sub text-xs text-[#4A5568] mt-1.5 block font-medium">
             {subtext}
           </span>
         )}
