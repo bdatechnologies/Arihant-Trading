@@ -18,6 +18,12 @@
       "runtimeExecutable": "bash",
       "runtimeArgs": ["-c", "cd apps/api && PORT=4100 DATABASE_URL=postgresql://postgres:postgres@localhost:5432/arihant_sandbox DIRECT_URL=postgresql://postgres:postgres@localhost:5432/arihant_sandbox exec node --watch --watch-path=dist dist/main.js"],
       "port": 4100
+    },
+    {
+      "name": "competitor-ads",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["--env-file=/home/dheerajsingh/Desktop/BDA TECH /Project/competitor-ads/.env", "/home/dheerajsingh/Desktop/BDA TECH /Project/competitor-ads/server.js"],
+      "port": 4319
     }
   ]
 }

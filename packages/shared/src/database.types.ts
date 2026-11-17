@@ -599,8 +599,36 @@ export interface TenderFinancialInstrumentsTable {
   status: Generated<string>;
   finance_owner_id: string | null;
   remarks: string | null;
+  // EMD workflow (migration 050)
+  requested_by: string | null;
+  required_by: string | null;
+  in_favour_of: string | null;
+  approved_by: string | null;
+  approved_at: Date | null;
+  issued_by: string | null;
+  issued_at: Date | null;
+  submitted_at: Date | null;
+  refund_due_on: string | null;
+  received_date: string | null;
+  receipt_reference: string | null;
+  closure_reason: string | null;
+  extension_count: Generated<number>;
   created_at: Generated<Date>;
   updated_at: Generated<Date>;
+}
+
+/** Append-only EMD / PBG lifecycle trail (migration 050). changed_by NULL = a move the system made. */
+export interface TenderFinancialInstrumentHistoryTable {
+  id: Generated<string>;
+  instrument_id: string;
+  tender_id: string;
+  action: string;
+  from_status: string | null;
+  to_status: string;
+  note: string | null;
+  changes: Generated<any>;
+  changed_by: string | null;
+  changed_at: Generated<Date>;
 }
 
 export interface TenderCommentsTable {
@@ -1967,6 +1995,7 @@ export interface Database {
   tender_documents: TenderDocumentsTable;
   tender_corrigenda: TenderCorrigendaTable;
   tender_financial_instruments: TenderFinancialInstrumentsTable;
+  tender_financial_instrument_history: TenderFinancialInstrumentHistoryTable;
   tender_comments: TenderCommentsTable;
   tender_assignment_history: TenderAssignmentHistoryTable;
   document_checklist_templates: DocumentChecklistTemplatesTable;

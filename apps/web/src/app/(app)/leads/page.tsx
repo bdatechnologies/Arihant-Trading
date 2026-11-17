@@ -59,6 +59,7 @@ import { useAuth } from '@/lib/auth-context';
 import { api } from '@/lib/api';
 import { type UrlParams, dropUrlParams, isUrlDay, urlPicker } from '@/lib/url-filters';
 import { uploadSignedFile } from '@/lib/signed-upload';
+import { phoneInput } from '@/lib/phone-input';
 import { useOpenParam } from '@/lib/use-open-param';
 import { useInfiniteList } from '@/lib/use-infinite-list';
 import { RelatedRecords } from '@/components/links/RelatedRecords';
@@ -3329,9 +3330,8 @@ export default function LeadsPage() {
                 required
                 type="tel"
                 inputMode="tel"
-                maxLength={16}
                 value={leadForm.contact_mobile}
-                onChange={(e) => setLeadForm({ ...leadForm, contact_mobile: e.target.value })}
+                onChange={(e) => setLeadForm({ ...leadForm, contact_mobile: phoneInput(e.target.value, 16) })}
                 placeholder="+91 98110 00000"
                 error={leadErrors.contact_mobile}
               />

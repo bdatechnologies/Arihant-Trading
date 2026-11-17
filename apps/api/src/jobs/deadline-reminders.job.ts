@@ -1,12 +1,14 @@
 import { Injectable, Inject, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { Kysely } from 'kysely';
+import { Kysely, sql } from 'kysely';
 import { KYSELY_DB } from '../common/database/database.module.js';
 import { AppEvents } from '../common/events/event-names.js';
+import { calendarDay } from '../common/utils/ist-date.util.js';
 import { EventsGateway } from '../common/realtime/events.gateway.js';
 import { OutboxService } from '../common/outbox/outbox.service.js';
 import {
+  CLOSED_LEAD_STATUSES,
   TENDER_UPCOMING_DAYS,
   TENDER_URGENT_HOURS,
   todayInKolkata,
@@ -14,6 +16,14 @@ import {
   isoDaysBetween,
   type Database,
 } from '@arihant/shared';
+
+/**
+ * A follow-up still worth chasing: not tied to a lead, or its lead is still open (Leads page LEAD_IS_OPEN). A converted,
+ * won or lost lead's leftover follow-up is not a reminder anyone should get.
+ */
+const FOLLOW_UP_ON_OPEN_LEAD = sql<boolean>`(follow_ups.lead_id is null or not exists (
+  select 1 from leads l where l.id = follow_ups.lead_id
+    and lower(coalesce(l.lead_status, l.status, 'new')) = any(${[...CLOSED_LEAD_STATUSES] as string[]}::text[])))`;
 
 /** Pre-submission stages — the only ones whose submission deadline can still be missed. */
 const PRE_SUBMISSION_STATUSES = ['identified', 'awaiting_approval', 'under_preparation', 'pq_qualified'];
@@ -209,6 +219,7 @@ export class DeadlineRemindersJob {
       ])
       .where('follow_ups.status', '=', 'pending')
       .where('follow_ups.due_date', '<', today)
+      .where(FOLLOW_UP_ON_OPEN_LEAD)
       .execute();
 
     for (const fu of overdueFollowUps) {
@@ -240,6 +251,139 @@ export class DeadlineRemindersJob {
 
     if (overdueFollowUps.length > 0) {
       this.outboxService.triggerImmediate();
+    }
+  }
+
+  /**
+   * Blueprint "Follow-up due": a pending follow-up due today (IST) on an open lead reminds its owner once. Runs hourly in
+   * working hours (08:00–20:00 IST) so a follow-up added in the morning is still caught, and nobody is pinged at night.
+   */
+  @Cron('0 0 8-20 * * *', { timeZone: 'Asia/Kolkata' })
+  async checkLeadFollowupsDue(): Promise<number> {
+    const today = todayInKolkata();
+    const due = await this.db
+      .selectFrom('follow_ups')
+      .innerJoin('organisations', 'follow_ups.organisation_id', 'organisations.id')
+      .select(['follow_ups.id', 'follow_ups.assigned_to', 'follow_ups.due_date', 'follow_ups.due_time', 'follow_ups.lead_id', 'organisations.name as organisation_name'])
+      .where('follow_ups.status', '=', 'pending')
+      .where('follow_ups.due_date', '=', today as any)
+      .where('follow_ups.assigned_to', 'is not', null)
+      .where(FOLLOW_UP_ON_OPEN_LEAD)
+      .execute();
+
+    let queued = 0;
+    for (const fu of due) {
+      const idempotencyKey = `due_fu_${fu.id}_${today}`;
+      if (await this.outboxService.isEventProcessed(idempotencyKey, 'DeadlineRemindersJob.checkLeadFollowupsDue')) continue;
+      await this.outboxService.queueEvent(this.db, {
+        eventType: AppEvents.FOLLOWUP_DUE,
+        aggregateType: 'FOLLOW_UP',
+        aggregateId: fu.id,
+        payload: {
+          followUpId: fu.id,
+          leadId: fu.lead_id,
+          assignedTo: fu.assigned_to,
+          dueDate: today,
+          dueTime: fu.due_time ?? null,
+          organisationName: fu.organisation_name,
+        },
+      });
+      await this.outboxService.markEventProcessed(idempotencyKey, 'DeadlineRemindersJob.checkLeadFollowupsDue');
+      queued++;
+    }
+    if (queued) this.outboxService.triggerImmediate();
+    return queued;
+  }
+
+  /**
+   * EMD / PBG watch (daily, 09:00 IST): a live instrument (issued, submitted or refund due) reaching 30 / 15 / 7 / 1
+   * days to expiry, or lapsed, and an EMD refund pending more than 30 days (once a week). Goes to the finance owner,
+   * else every Accounts user, plus the bid owner for expiry. Each reminder is sent once (processed_events).
+   */
+  @Cron('0 0 9 * * *', { timeZone: 'Asia/Kolkata' })
+  async checkInstrumentAttention() {
+    const today = todayInKolkata();
+    const rows = await this.db
+      .selectFrom('tender_financial_instruments as i')
+      .innerJoin('tenders as t', 't.id', 'i.tender_id')
+      .select([
+        'i.id',
+        'i.tender_id',
+        'i.instrument_type',
+        'i.amount',
+        'i.status',
+        'i.finance_owner_id',
+        'i.refund_due_on',
+        'i.expiry_date',
+        'i.created_at',
+        't.tender_no',
+        't.tender_number',
+        't.tender_owner_id',
+        't.assigned_to',
+        't.result_date',
+      ])
+      .where('i.status', 'in', ['Issued', 'Submitted', 'Refund Due'])
+      .where('t.is_deleted', '=', false)
+      .execute();
+    if (!rows.length) return;
+
+    const accounts = (
+      await this.db.selectFrom('users').select('id').where('role', '=', 'accounts').where('is_active', '=', true).execute()
+    ).map((u) => u.id);
+    // DATE columns arrive as local-midnight Dates: read them as their IST calendar day, never via toISOString (UTC).
+    const day = (v: unknown) => calendarDay(v as any);
+    const isoWeek = (d: string) => `${d.slice(0, 4)}-w${Math.ceil((isoDaysBetween(`${d.slice(0, 4)}-01-01`, d) + 1) / 7)}`;
+
+    for (const r of rows) {
+      const what = `${r.instrument_type}${r.amount ? ` of ₹ ${Number(r.amount).toLocaleString('en-IN')}` : ''}`;
+      const bid = r.tender_number || r.tender_no || 'a tender';
+      const finance = r.finance_owner_id ? [r.finance_owner_id] : accounts;
+      const notices: { key: string; title: string; body: string; to: string[] }[] = [];
+
+      const expiry = day(r.expiry_date);
+      if (expiry) {
+        const left = isoDaysBetween(today, expiry);
+        if (left < 0 || [30, 15, 7, 1].includes(left)) {
+          notices.push({
+            key: left < 0 ? `instrument-lapsed-${r.id}-${expiry}` : `instrument-expiry-${r.id}-${expiry}-${left}`,
+            title: left < 0 ? `${r.instrument_type} validity lapsed: ${bid}` : `${r.instrument_type} expires in ${left} day${left === 1 ? '' : 's'}: ${bid}`,
+            body:
+              left < 0
+                ? `${what} for ${bid} passed its expiry date (${expiry}) while still ${r.status}. Extend it with the bank or mark it expired.`
+                : `${what} for ${bid} expires on ${expiry} and is still ${r.status}. Get it extended or returned in time.`,
+            to: [...finance, ...([r.tender_owner_id, r.assigned_to].filter(Boolean) as string[])],
+          });
+        }
+      }
+      if (r.status === 'Refund Due' && r.instrument_type === 'EMD') {
+        const since = day(r.refund_due_on) || day(r.result_date) || day(r.created_at)!;
+        const pending = isoDaysBetween(since, today);
+        if (pending > 30) {
+          notices.push({
+            key: `instrument-refund-aging-${r.id}-${isoWeek(today)}`,
+            title: `EMD refund pending ${pending} days: ${bid}`,
+            body: `${what} for ${bid} has been due back since ${since}. Follow up with the buyer and record it when received.`,
+            to: finance,
+          });
+        }
+      }
+
+      for (const n of notices) {
+        if (await this.outboxService.isEventProcessed(n.key, 'InstrumentAttention')) continue;
+        for (const userId of new Set(n.to)) {
+          try {
+            const row = await this.db
+              .insertInto('notifications')
+              .values({ user_id: userId, type: 'tender_instrument', title: n.title, body: n.body, entity_type: 'tender', entity_id: r.tender_id, is_read: false })
+              .returningAll()
+              .executeTakeFirst();
+            if (row) this.eventsGateway.sendToUser(userId, 'notification:new', row);
+          } catch (err: any) {
+            this.logger.warn(`Instrument reminder failed for ${r.id}: ${err.message}`);
+          }
+        }
+        await this.outboxService.markEventProcessed(n.key, 'InstrumentAttention');
+      }
     }
   }
 }

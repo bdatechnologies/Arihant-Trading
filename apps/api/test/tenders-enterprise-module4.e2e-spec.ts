@@ -415,20 +415,59 @@ describe('Module 4: Tender Management Enterprise Extensions E2E Suite', () => {
       instrumentId = res.body.id;
     });
 
-    it('✓ Finance updates instrument status to Issued', async () => {
+    it('✓ The status cannot be set directly — it moves through the EMD workflow', async () => {
       const res = await request(app.getHttpServer())
         .patch(`/api/tenders/${enterpriseTenderId}/financial-instruments/${instrumentId}`)
         .set('Authorization', `Bearer ${accountsToken}`)
-        .send({
-          status: 'Issued',
-          reference_number: 'SBI-DD-998811',
-          issue_date: '2026-09-25',
-          expiry_date: '2027-03-25',
-        });
+        .send({ status: 'Issued' });
+      expect(res.status).toBe(400);
+    });
 
-      expect(res.status).toBe(200);
+    it('✓ Accounts cannot issue an EMD that is not approved yet', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/tenders/${enterpriseTenderId}/financial-instruments/${instrumentId}/transition`)
+        .set('Authorization', `Bearer ${accountsToken}`)
+        .send({ action: 'issue', reference_number: 'SBI-DD-998811', issue_date: '2026-09-25', expiry_date: '2027-03-25' });
+      expect(res.status).toBe(400);
+    });
+
+    it('✓ The requester cannot approve their own EMD request', async () => {
+      const res = await request(app.getHttpServer())
+        .post(`/api/tenders/${enterpriseTenderId}/financial-instruments/${instrumentId}/transition`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ action: 'approve' });
+      expect(res.status).toBe(403);
+    });
+
+    it('✓ Admin approves, then Finance records the DD as issued', async () => {
+      const approved = await request(app.getHttpServer())
+        .post(`/api/tenders/${enterpriseTenderId}/financial-instruments/${instrumentId}/transition`)
+        .set('Authorization', `Bearer ${adminToken}`)
+        .send({ action: 'approve' });
+      expect(approved.status).toBe(201);
+      expect(approved.body.status).toBe('Approved');
+
+      const missing = await request(app.getHttpServer())
+        .post(`/api/tenders/${enterpriseTenderId}/financial-instruments/${instrumentId}/transition`)
+        .set('Authorization', `Bearer ${accountsToken}`)
+        .send({ action: 'issue', reference_number: 'SBI-DD-998811', issue_date: '2026-09-25' });
+      // A DD carries a validity date.
+      expect(missing.status).toBe(400);
+
+      const res = await request(app.getHttpServer())
+        .post(`/api/tenders/${enterpriseTenderId}/financial-instruments/${instrumentId}/transition`)
+        .set('Authorization', `Bearer ${accountsToken}`)
+        .send({ action: 'issue', reference_number: 'SBI-DD-998811', issue_date: '2026-09-25', expiry_date: '2027-03-25' });
+
+      expect(res.status).toBe(201);
       expect(res.body.status).toBe('Issued');
       expect(res.body.reference_number).toBe('SBI-DD-998811');
+
+      const history = await request(app.getHttpServer())
+        .get(`/api/tenders/${enterpriseTenderId}/financial-instruments/${instrumentId}/history`)
+        .set('Authorization', `Bearer ${mgmtToken}`);
+      expect(history.status).toBe(200);
+      expect(history.body.map((h: any) => h.to_status)).toEqual(['Requested', 'Approved', 'Issued']);
     });
 
     it('✓ Finance EMD tracking endpoint returns blocked EMD amounts and instrument summaries', async () => {
@@ -476,6 +515,109 @@ describe('Module 4: Tender Management Enterprise Extensions E2E Suite', () => {
   // =========================================================================
   // 7. Workflow & Inter-Module Integrations (Linked Tender & Sales Order)
   // =========================================================================
+  describe('EMD workflow follows the bid', () => {
+    it('✓ Online EMD: approved, issued, carried with the bid, refund due on loss, refund received; unpaid request cancelled', async () => {
+      const createRes = await request(app.getHttpServer())
+        .post('/api/tenders')
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({
+          tender_no: `EMD/FLOW/2026/${Date.now().toString().slice(-6)}`,
+          organisation_id: testOrgId,
+          product_id: testProductId,
+          publication_date: '2026-09-01',
+          submission_deadline: closesTodayIST(),
+          estimated_value: 5000000,
+          category: 'other',
+          emd_required: true,
+          emd_amount: 50000,
+          emd_mode: 'Online',
+        });
+      expect(createRes.status).toBe(201);
+      const tenderId = createRes.body.id;
+      const list = await request(app.getHttpServer())
+        .get(`/api/tenders/${tenderId}/financial-instruments`)
+        .set('Authorization', `Bearer ${mgmtToken}`);
+      const emd = list.body.find((i: any) => i.instrument_type === 'EMD');
+      expect(emd.status).toBe('Requested');
+      expect(emd.requested_by_name).toBeTruthy();
+
+      const step = (token: string, instrumentId: string, body: Record<string, unknown>) =>
+        request(app.getHttpServer())
+          .post(`/api/tenders/${tenderId}/financial-instruments/${instrumentId}/transition`)
+          .set('Authorization', `Bearer ${token}`)
+          .send(body);
+
+      expect((await step(adminToken, emd.id, { action: 'approve' })).body.status).toBe('Approved');
+      // An online transfer needs no bank / expiry, but its UTR and day.
+      const issued = await step(accountsToken, emd.id, { action: 'issue', reference_number: 'UTR-EMD-1', issue_date: istToday() });
+      expect(issued.status).toBe(201);
+      expect(issued.body.status).toBe('Issued');
+
+      // A second request that is never paid.
+      const extra = await request(app.getHttpServer())
+        .post(`/api/tenders/${tenderId}/financial-instruments`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ instrument_type: 'EMD', amount: 1000, mode: 'Online' });
+      expect(extra.status).toBe(201);
+
+      await request(app.getHttpServer()).post(`/api/tenders/${tenderId}/approval-request`).set('Authorization', `Bearer ${mgmtToken}`);
+      await request(app.getHttpServer())
+        .post(`/api/tenders/${tenderId}/approve`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ decision: 'approved' });
+      await readyChecklist(tenderId);
+      const submitted = await request(app.getHttpServer())
+        .post(`/api/tenders/${tenderId}/transitions`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ target_status: 'submitted', submission_date: istToday() });
+      expect(submitted.status).toBe(201);
+
+      const afterSubmit = await request(app.getHttpServer())
+        .get(`/api/tenders/${tenderId}/financial-instruments`)
+        .set('Authorization', `Bearer ${mgmtToken}`);
+      expect(afterSubmit.body.find((i: any) => i.id === emd.id).status).toBe('Submitted');
+
+      const closedAt = new Date(Date.now() - 86400000);
+      await db.updateTable('tenders').set({ submission_deadline: closedAt, bid_closing_date: closedAt }).where('id', '=', tenderId).execute();
+      const lost = await request(app.getHttpServer())
+        .post(`/api/tenders/${tenderId}/result`)
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({ outcome: 'lost', result_date: istToday(), loss_reasons: ['OTHER'], other_reason_text: 'L1 price below ours' });
+      expect(lost.status).toBe(201);
+
+      const afterLoss = await request(app.getHttpServer())
+        .get(`/api/tenders/${tenderId}/financial-instruments`)
+        .set('Authorization', `Bearer ${mgmtToken}`);
+      const emdAfter = afterLoss.body.find((i: any) => i.id === emd.id);
+      expect(emdAfter.status).toBe('Refund Due');
+      // DATE columns serialise as local midnight: compare the IST calendar day.
+      expect(new Date(emdAfter.refund_due_on).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })).toBe(istToday());
+      expect(afterLoss.body.find((i: any) => i.id === extra.body.id).status).toBe('Cancelled');
+
+      // The refund needs its credit reference.
+      expect((await step(accountsToken, emd.id, { action: 'record_refund', received_date: istToday() })).status).toBe(400);
+      const refunded = await step(accountsToken, emd.id, { action: 'record_refund', received_date: istToday(), receipt_reference: 'UTR-REFUND-1' });
+      expect(refunded.status).toBe(201);
+      expect(refunded.body.status).toBe('Refunded');
+
+      const history = await request(app.getHttpServer())
+        .get(`/api/tenders/${tenderId}/financial-instruments/${emd.id}/history`)
+        .set('Authorization', `Bearer ${mgmtToken}`);
+      expect(history.body.map((h: any) => h.to_status)).toEqual(['Requested', 'Approved', 'Issued', 'Submitted', 'Refund Due', 'Refunded']);
+      // The automatic moves are the system's (no person), the rest name who did them.
+      expect(history.body.filter((h: any) => h.changed_by === null).map((h: any) => h.action)).toEqual(['auto_submit', 'auto_refund_due']);
+
+      const sheet = await request(app.getHttpServer())
+        .get('/api/reports/sheets/emd')
+        .query({ search: createRes.body.tender_no })
+        .set('Authorization', `Bearer ${accountsToken}`);
+      expect(sheet.status).toBe(200);
+      const row = sheet.body.rows.find((r: any) => r.id === emd.id);
+      expect(row.cells.receiving).toBe('Yes');
+      expect(row.cells.form).toBe('Online');
+    });
+  });
+
   describe('Workflow & Inter-Module Integrations', () => {
     it('✓ Progresses tender to PQ_QUALIFIED and generates linked General tender', async () => {
       // 1. Submit for approval

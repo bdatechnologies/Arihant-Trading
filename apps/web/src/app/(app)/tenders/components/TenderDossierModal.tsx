@@ -48,7 +48,8 @@ import {
   Award,
 } from 'lucide-react';
 import { api } from '@/lib/api';
-import { formatINR, formatTaskDate, formatTaskDateTime, TENDER_STATUS_LABELS } from '@arihant/shared';
+import { EMD_FORMS, EMD_FORM_LABELS, FORMS_WITH_BANK, formatINR, formatTaskDate, formatTaskDateTime, instrumentStatusLabel, TENDER_STATUS_LABELS } from '@arihant/shared';
+import { InstrumentWorkflowModal, instrumentTone, istDayOf, type InstrumentRecord } from './InstrumentWorkflowModal';
 import { istToday, istNowLocalInput, fromIstLocalInput, toIstLocalInput } from '@/lib/ist-date';
 import { safeHttpUrl, validateHttpUrl } from '@/lib/safe-url';
 
@@ -476,15 +477,11 @@ export function TenderDossierModal({
   const [corrigendumError, setCorrigendumError] = useState<string | null>(null);
 
   const [isInstrumentOpen, setIsInstrumentOpen] = useState(false);
-  const [newInstrument, setNewInstrument] = useState({
-    instrument_type: 'EMD',
-    amount: '',
-    mode: 'DD',
-    bank: '',
-    reference_number: '',
-    status: 'Requested',
-  });
+  const blankInstrument = { instrument_type: 'EMD', amount: '', mode: 'DD', bank: '', in_favour_of: '', required_by: '', remarks: '' };
+  const [newInstrument, setNewInstrument] = useState(blankInstrument);
   const [instrumentError, setInstrumentError] = useState<string | null>(null);
+  // The instrument whose EMD / PBG workflow dialog is open.
+  const [workflowInstrument, setWorkflowInstrument] = useState<InstrumentRecord | null>(null);
 
   const [isCommentSubmitting, setIsCommentSubmitting] = useState(false);
   const [commentText, setCommentText] = useState('');
@@ -616,8 +613,9 @@ export function TenderDossierModal({
     setCorrigendumError(null);
     // EMD / PBG
     setIsInstrumentOpen(false);
-    setNewInstrument({ instrument_type: 'EMD', amount: '', mode: 'DD', bank: '', reference_number: '', status: 'Requested' });
+    setNewInstrument(blankInstrument);
     setInstrumentError(null);
+    setWorkflowInstrument(null);
     // Discussion
     setCommentText('');
     // Documents & Drive folder
@@ -927,23 +925,21 @@ export function TenderDossierModal({
     setActionLoading(true);
     try {
       await api.post(`/tenders/${tenderId}/financial-instruments`, {
-        ...newInstrument,
+        instrument_type: newInstrument.instrument_type,
         amount,
+        mode: newInstrument.mode,
+        bank: newInstrument.bank.trim() || undefined,
+        in_favour_of: newInstrument.in_favour_of.trim() || undefined,
+        required_by: newInstrument.required_by || undefined,
+        remarks: newInstrument.remarks.trim() || undefined,
       });
       setIsInstrumentOpen(false);
-      setNewInstrument({
-        instrument_type: 'EMD',
-        amount: '',
-        mode: 'DD',
-        bank: '',
-        reference_number: '',
-        status: 'Requested',
-      });
+      setNewInstrument(blankInstrument);
       await loadTender();
       onTenderUpdated?.();
       setFeedbackMsg({
         type: 'success',
-        text: 'Financial instrument request registered — it now appears in the Finance & EMD / PBG repository.',
+        text: 'Request raised — Management approves it, then Accounts records the payment. Track it in Finance & EMD.',
       });
     } catch (err: any) {
       setInstrumentError(err?.message || 'Failed to request financial instrument');
@@ -2520,7 +2516,9 @@ export function TenderDossierModal({
                       <TableHead>Amount</TableHead>
                       <TableHead>Mode / Bank</TableHead>
                       <TableHead>Reference No.</TableHead>
+                      <TableHead>Expiry</TableHead>
                       <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Workflow</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -2531,22 +2529,20 @@ export function TenderDossierModal({
                           ₹ {Number(fi.amount || 0).toLocaleString('en-IN')}
                         </TableCell>
                         <TableCell className="text-xs">
-                          {fi.mode} • {fi.bank || 'SBI'}
+                          {fi.mode || 'Online'}
+                          {fi.bank ? ` • ${fi.bank}` : ''}
                         </TableCell>
-                        <TableCell className="font-mono text-xs">{fi.reference_number || 'Pending Generation'}</TableCell>
+                        <TableCell className="font-mono text-xs">{fi.reference_number || <span className="text-[#6B7280]">Not issued yet</span>}</TableCell>
+                        <TableCell className="font-mono text-xs">{fi.expiry_date ? formatTaskDate(istDayOf(fi.expiry_date) || fi.expiry_date) : '—'}</TableCell>
                         <TableCell>
-                          <Badge
-                            variant={
-                              fi.status === 'Issued' || fi.status === 'Refunded'
-                                ? 'success'
-                                : fi.status === 'Refund Due' || fi.status === 'Forfeited'
-                                ? 'danger'
-                                : 'warning'
-                            }
-                            size="sm"
-                          >
-                            {fi.status}
+                          <Badge variant={instrumentTone(fi.status)} size="sm">
+                            {instrumentStatusLabel(fi.instrument_type, fi.status)}
                           </Badge>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <Button size="xs" variant="outline" onClick={() => setWorkflowInstrument({ ...fi, tender_id: tender.id, tender_number: tender.tender_number, tender_no: tender.tender_no })}>
+                            Open
+                          </Button>
                         </TableCell>
                       </TableRow>
                     ))}
@@ -2555,7 +2551,7 @@ export function TenderDossierModal({
               ) : (
                 <EmptyState
                   title="No financial instruments recorded"
-                  description="Raise EMD demand notes or Bank Guarantee requests to central Finance."
+                  description="Request an EMD, PBG or tender fee: Management approves it and Accounts records the payment."
                 />
               )}
             </div>
@@ -2991,7 +2987,7 @@ export function TenderDossierModal({
       <Modal
         isOpen={isInstrumentOpen}
         onClose={() => setIsInstrumentOpen(false)}
-        title="Request Financial Instrument (EMD / PBG)"
+        title="Request EMD / PBG / tender fee"
         maxWidth="md"
       >
         <div className="space-y-3 text-xs">
@@ -3022,29 +3018,56 @@ export function TenderDossierModal({
           />
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <Select
-              label="Mode"
+              label="EMD form"
               value={newInstrument.mode}
               onChange={(e) => setNewInstrument({ ...newInstrument, mode: e.target.value })}
-              options={[
-                { value: 'DD', label: 'Demand Draft (DD)' },
-                { value: 'BG', label: 'Bank Guarantee (BG)' },
-                { value: 'Online', label: 'Online Portal Gateway' },
-                { value: 'Exempted', label: 'MSE / Startup Exemption' },
-              ]}
+              options={EMD_FORMS.map((m) => ({ value: m, label: EMD_FORM_LABELS[m] }))}
+              helperText="An MSE / startup exemption is recorded on the tender itself, not as an instrument."
             />
             <Input
               label="Bank"
               value={newInstrument.bank}
               onChange={(e) => setNewInstrument({ ...newInstrument, bank: e.target.value })}
               placeholder="e.g. State Bank of India"
+              helperText={FORMS_WITH_BANK.includes(newInstrument.mode) ? 'Accounts must name it when they issue.' : 'Optional for an online transfer.'}
+            />
+            <Input
+              label="In favour of"
+              value={newInstrument.in_favour_of}
+              onChange={(e) => setNewInstrument({ ...newInstrument, in_favour_of: e.target.value })}
+              placeholder="e.g. PAO, CRPF, New Delhi"
+            />
+            <Input
+              label="Needed by"
+              type="date"
+              value={newInstrument.required_by}
+              onChange={(e) => setNewInstrument({ ...newInstrument, required_by: e.target.value })}
+              helperText={newInstrument.instrument_type === 'EMD' ? 'Defaults to the bid closing day.' : undefined}
             />
           </div>
+          <Textarea
+            label="Note for Finance"
+            rows={2}
+            value={newInstrument.remarks}
+            onChange={(e) => setNewInstrument({ ...newInstrument, remarks: e.target.value })}
+            placeholder="Anything Accounts should know (portal payment link, beneficiary details …)"
+          />
           <div className="flex justify-end space-x-2 pt-2">
             <Button variant="outline" size="sm" onClick={() => setIsInstrumentOpen(false)}>Cancel</Button>
-            <Button variant="primary" size="sm" onClick={handleAddInstrument} isLoading={actionLoading}>Submit to Finance</Button>
+            <Button variant="primary" size="sm" onClick={handleAddInstrument} isLoading={actionLoading}>Raise request</Button>
           </div>
         </div>
       </Modal>
+
+      <InstrumentWorkflowModal
+        instrument={workflowInstrument}
+        role={currentUser?.role}
+        onClose={() => setWorkflowInstrument(null)}
+        onChanged={() => {
+          void loadTender();
+          onTenderUpdated?.();
+        }}
+      />
 
       {/* Sub-modal: Reassign Team */}
       {isReassignOpen && (

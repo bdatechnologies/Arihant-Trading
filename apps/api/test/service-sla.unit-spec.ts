@@ -3,7 +3,16 @@
  * slides by the working time the pause consumed (Mon–Sat, 09:00–18:00 IST), never by wall-clock time.
  * No database or HTTP.
  */
-import { addBusinessHours, businessMsBetween } from '../src/modules/service/service.core';
+import { addBusinessHours, businessMsBetween, cleanText } from '../src/modules/service/service.core';
+
+describe('cleanText', () => {
+  it('replaces real tags with a space but keeps a lone "<" or ">"', () => {
+    expect(cleanText('Belt jams <2 min after start, motor >80C')).toBe('Belt jams <2 min after start, motor >80C');
+    expect(cleanText('Ramesh<b>X</b> Kumar')).toBe('Ramesh X Kumar');
+    // the nested trick cannot reassemble a tag: "< script>" (a space after "<") is inert text
+    expect(cleanText('<<script>script>alert(1)</script>Gate 3')).toBe('< script>alert(1) Gate 3');
+  });
+});
 
 const ist = (s: string) => new Date(`${s}+05:30`);
 const H = 3600000;

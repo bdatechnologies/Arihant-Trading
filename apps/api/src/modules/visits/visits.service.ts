@@ -844,6 +844,22 @@ export class VisitsService {
       }
     }
 
+    // Blueprint notifications "Visit planned" and "Additional visit assigned by manager": the employee's manager
+    // hears about every planned visit; the employee hears when someone else put the visit in their plan.
+    const assignee = await this.db.selectFrom('users').select(['full_name', 'reporting_manager_id']).where('id', '=', assignedTo).executeTakeFirst();
+    this.eventEmitter.emit(AppEvents.VISIT_PLANNED, {
+      visitId: visit.id,
+      employeeId: assignedTo,
+      employeeName: assignee?.full_name || 'An employee',
+      managerId: assignee?.reporting_manager_id || null,
+      actorId: user.id,
+      actorName: user.full_name,
+      organisationName: org.name,
+      location: visit.location,
+      plannedDate: dmy(visit.planned_date),
+      purpose: visit.purpose,
+    });
+
     return visit;
   }
 
@@ -936,6 +952,8 @@ export class VisitsService {
       changeDetails: `Updated details (location: ${updated.location}, date: ${dmy(updated.planned_date)})`,
       reason: dto.change_reason,
       managerId: userOrg?.reporting_manager_id || existing.assigned_by_manager,
+      actorId: user.id,
+      actorName: user.full_name,
     });
 
     return updated;
@@ -1069,6 +1087,8 @@ export class VisitsService {
       newDate: dmy(dto.new_date),
       reason: dto.reason,
       managerId: userRecord?.reporting_manager_id || existing.assigned_by_manager,
+      actorId: user.id,
+      actorName: user.full_name,
     });
 
     return updated;
@@ -1126,6 +1146,8 @@ export class VisitsService {
       plannedDate: dmy(existing.planned_date),
       reason: dto.reason,
       managerId: userRecord?.reporting_manager_id || existing.assigned_by_manager,
+      actorId: user.id,
+      actorName: user.full_name,
     });
 
     return updated;
@@ -1191,6 +1213,8 @@ export class VisitsService {
       changeDetails: `Destination changed from "${existing.location}" to "${dto.new_location}"`,
       reason: dto.reason,
       managerId: userRecord?.reporting_manager_id || existing.assigned_by_manager,
+      actorId: user.id,
+      actorName: user.full_name,
     });
 
     return updated;
@@ -1737,6 +1761,8 @@ export class VisitsService {
       outcome: dto.outcome,
       personMet: dto.person_met,
       managerId: userRecord?.reporting_manager_id || existing.assigned_by_manager,
+      actorId: user.id,
+      actorName: user.full_name,
     });
 
     return result;

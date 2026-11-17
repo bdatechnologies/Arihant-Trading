@@ -65,6 +65,9 @@ export class PerformanceReviewsService {
     const s = await this.store.masters.settings();
     let q = this.select().orderBy('pr.period_from', 'desc').orderBy('pr.version', 'desc').limit(300);
     const employeeId = typeof query.employee_id === 'string' && UUID_RE.test(query.employee_id) ? query.employee_id : null;
+    // A filter that cannot be applied must not fall back to "every review I can see" (the evidence page showed
+    // other people's reviews under a broken employee link).
+    if (query.employee_id !== undefined && query.employee_id !== '' && !employeeId) throw new TaskValidationException({ employee_id: 'Choose a valid employee.' });
     if (employeeId) q = q.where('pr.employee_id', '=', employeeId);
     if (query.mine === 'true') q = q.where('pr.employee_id', '=', user.id);
     if (!this.store.access.canViewAll(user)) {

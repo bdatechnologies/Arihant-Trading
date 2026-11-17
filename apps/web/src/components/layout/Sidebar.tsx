@@ -3,7 +3,7 @@
 import { BrandMark } from '@/components/layout/BrandMark';
 import React, { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useSearchParams } from 'next/navigation';
 import {
   FileText,
   Target,
@@ -980,6 +980,27 @@ function useNavCounts(enabled: boolean): NavCounts | null {
   return counts;
 }
 
+/**
+ * Exactly one item is active. Items match on their path (the page itself or one of its sub-pages; /dashboard only
+ * exactly), longest path first, so /regional/performance highlights "Regional performance", not also /regional.
+ * Among items on that same path, one whose ?query params all hold in the URL wins (/demos?tab=failures), then a plain
+ * one (/demos). An item that carries a query with no plain sibling (/tenders?scope=my_tenders) still owns its page
+ * whatever the query says, so changing the Tenders View filter or opening /tenders directly keeps it highlighted.
+ */
+function activeNavHref(hrefs: string[], pathname: string, search: { get(key: string): string | null }): string | undefined {
+  const pathOf = (href: string) => href.split('?')[0];
+  const covers = (path: string) => pathname === path || (path !== '/dashboard' && pathname.startsWith(`${path}/`));
+  const queryHolds = (href: string) => {
+    const query = href.split('?')[1];
+    return Boolean(query) && Array.from(new URLSearchParams(query)).every(([k, v]) => search.get(k) === v);
+  };
+  const matches = hrefs.filter((h) => covers(pathOf(h)));
+  if (matches.length === 0) return undefined;
+  const longest = Math.max(...matches.map((h) => pathOf(h).length));
+  const best = matches.filter((h) => pathOf(h).length === longest);
+  return best.find((h) => pathOf(h) === pathname && queryHolds(h)) ?? best.find((h) => !h.includes('?')) ?? best[0];
+}
+
 function toSentenceCase(str: string): string {
   if (!str) return '';
   const lower = str.toLowerCase();
@@ -1033,15 +1054,14 @@ export const Sidebar: React.FC = () => {
       return next;
     });
 
-  // Exactly one item is active: a matching ?query item wins, otherwise the longest matching path
-  // (so /regional/performance highlights "Performance", not also its parent /regional).
-  const search = typeof window !== 'undefined' ? window.location.search : '';
-  const navHrefs = navGroups.flatMap((g) => g.items.map((it) => it.href));
-  const activeHref =
-    navHrefs.find((h) => h.includes('?') && pathname === h.split('?')[0] && search.includes(h.split('?')[1])) ??
-    navHrefs
-      .filter((h) => !h.includes('?') && (pathname === h || (h !== '/dashboard' && pathname.startsWith(`${h}/`))))
-      .sort((a, b) => b.length - a.length)[0];
+  // Read the query from the router, not window.location: during a client navigation the sidebar re-renders before
+  // the address bar updates, so window.location.search still holds the previous page's query.
+  const searchParams = useSearchParams();
+  const activeHref = activeNavHref(
+    navGroups.flatMap((g) => g.items.map((it) => it.href)),
+    pathname,
+    searchParams,
+  );
   const isItemActive = (item: NavItem) => item.href === activeHref;
 
   const q = query.trim().toLowerCase();
@@ -1116,6 +1136,7 @@ export const Sidebar: React.FC = () => {
                       }}
                       onMouseLeave={() => setTip(null)}
                       data-active={isActive || undefined}
+                      aria-current={isActive ? 'page' : undefined}
                       className="md-rail-item relative my-1.5 ml-2 flex h-9 w-14 cursor-pointer items-center justify-center"
                     >
                       <Icon className="h-[22px] w-[22px]" />
@@ -1130,6 +1151,7 @@ export const Sidebar: React.FC = () => {
                     href={item.href}
                     onClick={onNavigate}
                     data-active={isActive || undefined}
+                    aria-current={isActive ? 'page' : undefined}
                     className="md-nav-item min-w-0 max-w-full"
                   >
                     <Icon className="md-nav-item__icon" />

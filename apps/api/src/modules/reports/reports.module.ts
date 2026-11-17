@@ -9,11 +9,12 @@ import { ProductivityReportService } from './productivity-report.service.js';
 import { TasksModule } from '../tasks/tasks.module.js';
 import { MisReportService } from './mis-report.service.js';
 import { SecurityRegisterService } from './security-register.service.js';
+import { SheetsService } from './sheets.service.js';
 
 @Module({
   imports: [ServiceModule, ExpenseManagementModule, TasksModule],
   controllers: [ReportsController],
-  providers: [PipelineReportService, ServiceReportService, ExpenseReportService, ProductivityReportService, MisReportService, SecurityRegisterService],
+  providers: [PipelineReportService, ServiceReportService, ExpenseReportService, ProductivityReportService, MisReportService, SecurityRegisterService, SheetsService],
   // the Management Command dashboard reads "people needing attention" and on-time completion from Report 4
   exports: [ProductivityReportService],
 })

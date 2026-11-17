@@ -350,8 +350,12 @@ describe('Blueprint §38–43 — Task & Productivity Management, spec walk-thro
       expect(e.body).toMatchObject({ status: 'blocked', open_blocker: expect.objectContaining({ id: blockerId, status: 'pending_review' }) });
       expect(e.body.escalations[0]).toMatchObject({ blocker_id: blockerId, escalated_to: u.mgmt.id });
       // mgmt@ is a shared seeded user with a long queue (oldest first): look for this task's blocker by its number.
-      const queue = (await http().get('/api/task-blockers/pending').query({ search: (await get(u.e1, id)).body.task_number }).set(bearer(u.mgmt))).body.data;
-      expect(queue.some((b: any) => b.id === blockerId)).toBe(true);
+      const taskNumber = (await get(u.e1, id)).body.task_number;
+      const queue = (await http().get('/api/task-blockers/pending').query({ search: taskNumber }).set(bearer(u.mgmt))).body.data;
+      expect(queue.find((b: any) => b.id === blockerId)).toMatchObject({ escalated_to: u.mgmt.id, escalation_reason: 'Discount is above my approval limit' });
+      // The line manager keeps the blocker in their queue, marked as escalated so it is not escalated twice or forgotten.
+      const mine = (await http().get('/api/task-blockers/pending').query({ search: taskNumber }).set(bearer(u.mgr))).body.data;
+      expect(mine.find((b: any) => b.id === blockerId)).toMatchObject({ escalated_to: u.mgmt.id, escalated_to_name: expect.any(String), escalated_by_name: expect.any(String) });
       expect((await decide(u.mgmt, id, 'accept', { mode: 'pause', comment: 'Discount approved by national head' })).body.open_blocker.status).toBe('accepted');
     });
   });

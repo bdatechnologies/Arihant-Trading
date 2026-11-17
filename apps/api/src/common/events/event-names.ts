@@ -20,6 +20,10 @@ export const AppEvents = {
   TENDER_LOST: 'tender.lost',
   TENDER_CANCELLED: 'tender.cancelled',
   TENDER_ON_HOLD: 'tender.on_hold',
+  /** An EMD / PBG / fee moved a workflow step (or the system moved it with the tender). */
+  TENDER_INSTRUMENT_STATUS_CHANGED: 'tender.instrument_status_changed',
+  /** Daily: a live EMD / PBG is close to expiry, or a refund has been pending too long. */
+  TENDER_INSTRUMENT_ATTENTION: 'tender.instrument_attention',
 
   EXPENSE_SUBMITTED: 'expense.submitted',
   EXPENSE_MANAGER_APPROVED: 'expense.manager_approved',
@@ -30,6 +34,7 @@ export const AppEvents = {
   TASK_BLOCKED: 'task.blocked',
   TASK_OVERDUE: 'task.overdue',
 
+  VISIT_PLANNED: 'visit.planned',
   VISIT_CANCELLED: 'visit.cancelled',
   VISIT_RESCHEDULED: 'visit.rescheduled',
   VISIT_MODIFIED: 'visit.modified',
@@ -116,5 +121,6 @@ export const AppEvents = {
   INTERACTION_UPDATED: 'interaction.updated',
   FOLLOWUP_CREATED: 'followup.created',
   FOLLOWUP_COMPLETED: 'followup.completed',
+  FOLLOWUP_DUE: 'followup.due',
   FOLLOWUP_OVERDUE: 'followup.overdue',
 } as const;

@@ -392,6 +392,17 @@ describe('Module 6 — public customer portal: intake, triggers, tracking, feedb
       expect(intake.claimed_organisation).toContain('Border Unit');
     });
 
+    it('keeps a lone "<" or ">" in the complaint — only real tags are stripped', async () => {
+      const complaint = `ZZTEST Belt jams <2 min after start, motor >80C at gate three ${uniq()}`;
+      const r = await submit(valid({ complaint }));
+      expect(r.status).toBe(201);
+      const intake = (await sql1(`select complaint from service_intake_requests where reference='${r.body.reference}'`))[0];
+      expect(intake.complaint).toBe(complaint);
+      // the ticket prefixes an "[UNVERIFIED CUSTOMER …]" header line; the customer's words follow unchanged
+      const t = (await sql1(`select complaint from service_tickets where ticket_no='${r.body.reference}'`))[0];
+      expect(t.complaint).toContain(complaint);
+    });
+
     it.each([
       "ZZTEST '; DROP TABLE service_tickets; -- the scanner stopped on the belt",
       'ZZTEST " OR 1=1 -- the scanner stopped working on the main belt',

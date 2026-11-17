@@ -344,6 +344,9 @@ export class TaskWorkflowService {
         }
         const target = await trx.selectFrom('users').select(['id', 'full_name', 'is_active', 'role']).where('id', '=', toId).executeTakeFirst();
         if (!target?.is_active) throw new TaskValidationException({ to_user_id: 'Escalation target must be an active user.' });
+        // Escalating again to the same person while theirs is still open only duplicates the row and the notification.
+        const already = await trx.selectFrom('task_escalations').select('id').where('task_id', '=', task.id).where('escalated_to', '=', target.id).where('status', '<>', 'closed').executeTakeFirst();
+        if (already) throw conflict(`This task is already escalated to ${target.full_name} and that escalation is still open.`);
         const ob = await this.store.openBlocker(trx, task.id);
         const esc = await trx
           .insertInto('task_escalations')

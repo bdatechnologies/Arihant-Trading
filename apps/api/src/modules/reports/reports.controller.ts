@@ -1,4 +1,4 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import {
   REPORT_ROLES,
   type AuthUser,
@@ -8,6 +8,7 @@ import {
   type ProductivityReportDto,
   type MisReportDto,
   type SecurityRegisterDto,
+  type SheetDto,
 } from '@arihant/shared';
 import { JwtAuthGuard } from '../../common/auth/jwt.guard.js';
 import { RolesGuard } from '../../common/auth/roles.guard.js';
@@ -19,6 +20,7 @@ import { ExpenseReportService } from './expense-report.service.js';
 import { ProductivityReportService } from './productivity-report.service.js';
 import { MisReportService } from './mis-report.service.js';
 import { SecurityRegisterService } from './security-register.service.js';
+import { SheetsService } from './sheets.service.js';
 
 /**
  * Cross-module management reports. Each report is computed from the records the modules already hold and scoped to
@@ -34,6 +36,7 @@ export class ReportsController {
     private readonly productivity: ProductivityReportService,
     private readonly mis: MisReportService,
     private readonly securities: SecurityRegisterService,
+    private readonly sheets: SheetsService,
   ) {}
 
   /** Report 1 — lead / visit / demo / proposal / tender pipeline, conversion, win rate, zone / region / salesperson. */
@@ -76,5 +79,12 @@ export class ReportsController {
   @Roles(...REPORT_ROLES.securities)
   securityRegister(@CurrentUser() user: AuthUser, @Query() query: Record<string, unknown>): Promise<SecurityRegisterDto> {
     return this.securities.report(user, query);
+  }
+
+  /** Report 7 — one sheet of the "ALL DASHBOARDS" workbook (SHEETS in @arihant/shared), with its own columns. */
+  @Get('sheets/:key')
+  @Roles(...REPORT_ROLES.sheets)
+  sheet(@CurrentUser() user: AuthUser, @Param('key') key: string, @Query() query: Record<string, unknown>): Promise<SheetDto> {
+    return this.sheets.report(user, key, query);
   }
 }

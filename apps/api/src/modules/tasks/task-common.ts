@@ -6,6 +6,7 @@ import { BadRequestException, ConflictException } from '@nestjs/common';
 import { sql } from 'kysely';
 import { isIsoDateString, istDateTime, istEndOfDay } from '@arihant/shared';
 import { readText, sanitizeFileName } from '../expense-management/expense-validation.js';
+import { containsPattern } from '../../common/utils/like-pattern.js';
 import { getPaginationParams } from '../../common/utils/pagination.js';
 
 export { readText, sanitizeFileName };
@@ -22,7 +23,8 @@ export const readSearch = (q: Record<string, unknown>) => (typeof q.search === '
 
 /** Search on task number, title and assignee name (aliases `t`, `emp`) — the task list and both review queues. */
 export function taskSearchSql(search: string) {
-  const like = `%${search.toLowerCase()}%`;
+  // "%" and "_" typed by the user are literal characters, not LIKE wildcards ("%" alone used to match every task).
+  const like = containsPattern(search);
   return sql<boolean>`(lower(t.title) like ${like} or lower(t.task_number) like ${like} or lower(emp.full_name) like ${like})`;
 }
 

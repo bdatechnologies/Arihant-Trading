@@ -60,6 +60,7 @@ import {
   ImportProposalSheetDto,
 } from './proposals.dto.js';
 import { containsPattern } from '../../common/utils/like-pattern.js';
+import { stripHtmlTags } from '../../common/utils/strip-html.js';
 
 /** Human status names for server messages. */
 const PROPOSAL_STATUS_TEXT: Record<string, string> = {
@@ -185,8 +186,8 @@ export class ProposalsService {
     if (val === undefined || val === null) return null;
     const trimmed = val.trim();
     if (trimmed.length === 0) return null;
-    // Strip script and dangerous HTML tags
-    return trimmed.replace(/<[^>]*>?/gm, '');
+    // Strip HTML tags only — "discount <5%" must not lose everything after the "<".
+    return stripHtmlTags(trimmed);
   }
 
   /**

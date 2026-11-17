@@ -7,6 +7,7 @@ import { Button, Card, Checkbox, Input, Select, Textarea, InfoCallout, Badge } f
 import { Spinner } from '@/components/ui/Spinner';
 import { apiMessages, copyText, fmtDateTime } from './shared';
 import { addIsoDays, istToday } from '@/lib/ist-date';
+import { phoneInput } from '@/lib/phone-input';
 
 interface Meta {
   enabled: boolean;
@@ -334,7 +335,7 @@ export default function ServiceRequestPage() {
         <Input label="Designation / rank (optional)" value={f.contact_designation} onChange={(e) => set('contact_designation', e.target.value)} className="h-11 text-sm" />
         <div className="grid gap-4 sm:grid-cols-2">
           <div data-field="contact_phone">
-            <Input label="Phone" required type="tel" inputMode="tel" value={f.contact_phone} onChange={(e) => set('contact_phone', e.target.value)}
+            <Input label="Phone" required type="tel" inputMode="tel" value={f.contact_phone} onChange={(e) => set('contact_phone', phoneInput(e.target.value))}
               onBlur={() => blur('contact_phone')} error={errFor('contact_phone')} autoComplete="tel" placeholder="10-digit mobile" className="h-11 text-sm" />
           </div>
           <div data-field="contact_email">

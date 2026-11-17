@@ -34,6 +34,9 @@ export class NotificationListener {
     entityId?: string;
   }) {
     try {
+      // A deactivated user can no longer act on anything: they are never notified (their work is reassigned instead).
+      const target = await this.db.selectFrom('users').select('is_active').where('id', '=', data.userId).executeTakeFirst();
+      if (!target?.is_active) return;
       const res = await this.db
         .insertInto('notifications')
         .values({
@@ -324,6 +327,94 @@ export class NotificationListener {
     if (eventId) {
       await this.outboxService.markEventProcessed(eventId, 'NotificationListener.tenderSubmitted');
     }
+  }
+
+  /** Active users holding any of these roles. */
+  private async usersInRoles(roles: UserRole[]): Promise<string[]> {
+    if (!roles.length) return [];
+    const rows = await this.db.selectFrom('users').select('id').where('role', 'in', roles).where('is_active', '=', true).execute();
+    return rows.map((r) => r.id);
+  }
+
+  /**
+   * EMD / PBG workflow step: tell whoever acts next (Management approves, Accounts pays and chases the refund, the
+   * bid owner submits), and tell the requester how their request ended. The person who took the step is skipped.
+   */
+  @OnEvent(AppEvents.TENDER_INSTRUMENT_STATUS_CHANGED)
+  async handleInstrumentStatusChanged(eventInput: any) {
+    const { payload: p, eventId } = this.unpackEvent<{
+      tenderId: string;
+      tenderNo: string | null;
+      instrumentType: string;
+      amount: number | null;
+      action: string;
+      toStatus: string;
+      note?: string | null;
+      requestedBy?: string | null;
+      financeOwnerId?: string | null;
+      tenderOwnerId?: string | null;
+      assignedPersonId?: string | null;
+      actorId?: string | null;
+    }>(eventInput);
+    const key = 'NotificationListener.instrumentStatusChanged';
+    if (eventId && (await this.outboxService.isEventProcessed(eventId, key))) return;
+
+    const what = `${p.instrumentType}${p.amount ? ` of ₹ ${Number(p.amount).toLocaleString('en-IN')}` : ''}`;
+    const bid = p.tenderNo || 'a tender';
+    const owners = [p.tenderOwnerId, p.assignedPersonId, p.requestedBy].filter(Boolean) as string[];
+    const finance = [p.financeOwnerId].filter(Boolean) as string[];
+    let recipients: string[] = [];
+    let title = '';
+    let body = '';
+    switch (p.toStatus) {
+      case 'Requested':
+        recipients = await this.usersInRoles(['management']);
+        title = `${p.instrumentType} approval needed: ${bid}`;
+        body = `${what} has been requested for ${bid} and is waiting for your approval.`;
+        break;
+      case 'Approved':
+        recipients = [...finance, ...(await this.usersInRoles(['accounts']))];
+        title = `${p.instrumentType} approved — arrange payment: ${bid}`;
+        body = `${what} for ${bid} is approved. Record the DD / BG / UTR details once it is issued.`;
+        break;
+      case 'Rejected':
+      case 'Cancelled':
+        recipients = owners;
+        title = `${p.instrumentType} ${p.toStatus.toLowerCase()}: ${bid}`;
+        body = `${what} for ${bid} was ${p.toStatus.toLowerCase()}${p.note ? `: ${p.note}` : '.'}`;
+        break;
+      case 'Issued':
+        recipients = owners;
+        title = `${p.instrumentType} issued: ${bid}`;
+        body = `${what} for ${bid} has been issued by Accounts${p.instrumentType === 'EMD' ? ' — submit it with the bid.' : '.'}`;
+        break;
+      case 'Refund Due':
+        recipients = [...finance, ...(await this.usersInRoles(['accounts']))];
+        title = `${p.instrumentType} ${p.instrumentType === 'EMD' ? 'refund' : 'release'} due: ${bid}`;
+        body = `${what} for ${bid} is now owed back${p.note ? ` (${p.note})` : ''}. Follow up with the buyer and record it when received.`;
+        break;
+      case 'Refunded':
+      case 'Released':
+        recipients = owners;
+        title = `${p.instrumentType} ${p.toStatus === 'Refunded' ? 'refund received' : 'released'}: ${bid}`;
+        body = `${what} for ${bid} is back with us.`;
+        break;
+      case 'Forfeited':
+        recipients = [...owners, ...(await this.usersInRoles(['management']))];
+        title = `${p.instrumentType} forfeited: ${bid}`;
+        body = `${what} for ${bid} was forfeited${p.note ? `: ${p.note}` : '.'}`;
+        break;
+      default:
+        recipients = finance;
+        title = `${p.instrumentType} ${p.toStatus.toLowerCase()}: ${bid}`;
+        body = `${what} for ${bid} is now ${p.toStatus}.`;
+    }
+
+    for (const userId of new Set(recipients)) {
+      if (userId === p.actorId) continue;
+      await this.createAndPushNotification({ userId, type: 'tender_instrument', title, body, entityType: 'tender', entityId: p.tenderId });
+    }
+    if (eventId) await this.outboxService.markEventProcessed(eventId, key);
   }
 
   @OnEvent(AppEvents.TENDER_WON)
@@ -641,6 +732,54 @@ export class NotificationListener {
     });
   }
 
+  /**
+   * A visit changed: tell the people it affects, never the person who made the change. When the employee acts, their
+   * manager hears; when a manager (or management / admin) acts, the employee whose plan changed hears, and so does
+   * the employee's own manager if someone else did it. Events from before `actorId` existed count as the employee's.
+   */
+  private async notifyVisitChange(
+    p: { visitId: string; employeeId: string; employeeName: string; managerId?: string | null; actorId?: string | null; actorName?: string | null },
+    type: string,
+    byEmployee: { title: string; body: string },
+    byOther: (actor: string) => { employee: { title: string; body: string }; manager: { title: string; body: string } },
+  ) {
+    const actorId = p.actorId || p.employeeId;
+    const managerId = p.managerId && p.managerId !== p.employeeId && p.managerId !== actorId ? p.managerId : null;
+    if (actorId === p.employeeId) {
+      if (managerId) await this.createAndPushNotification({ userId: managerId, type, ...byEmployee, entityType: 'visit', entityId: p.visitId });
+      return;
+    }
+    const text = byOther(p.actorName || 'Your manager');
+    await this.createAndPushNotification({ userId: p.employeeId, type, ...text.employee, entityType: 'visit', entityId: p.visitId });
+    if (managerId) await this.createAndPushNotification({ userId: managerId, type, ...text.manager, entityType: 'visit', entityId: p.visitId });
+  }
+
+  @OnEvent(AppEvents.VISIT_PLANNED)
+  async handleVisitPlanned(p: {
+    visitId: string;
+    employeeId: string;
+    employeeName: string;
+    managerId?: string | null;
+    actorId: string;
+    actorName: string;
+    organisationName: string;
+    location?: string | null;
+    plannedDate: string;
+    purpose?: string | null;
+  }) {
+    const where = `${p.organisationName}${p.location ? ` (${p.location})` : ''} on ${p.plannedDate}`;
+    const purpose = p.purpose ? ` Purpose: ${p.purpose}` : '';
+    await this.notifyVisitChange(
+      p,
+      'visit_planned',
+      { title: `Visit planned: ${p.employeeName} → ${p.organisationName}`, body: `${p.employeeName} plans to visit ${where}.${purpose}` },
+      (actor) => ({
+        employee: { title: `New visit assigned to you: ${p.organisationName}`, body: `${actor} added a visit to ${where} to your plan.${purpose}` },
+        manager: { title: `Visit planned: ${p.employeeName} → ${p.organisationName}`, body: `${actor} planned a visit for ${p.employeeName} to ${where}.${purpose}` },
+      }),
+    );
+  }
+
   @OnEvent(AppEvents.VISIT_CANCELLED)
   async handleVisitCancelled(payload: {
     visitId: string;
@@ -650,17 +789,19 @@ export class NotificationListener {
     plannedDate: string;
     reason: string;
     managerId?: string;
+    actorId?: string;
+    actorName?: string;
   }) {
-    if (payload.managerId && payload.managerId !== payload.employeeId) {
-      await this.createAndPushNotification({
-        userId: payload.managerId,
-        type: 'visit_cancelled',
-        title: 'Field Visit Cancelled by Employee',
-        body: `${payload.employeeName} cancelled visit to ${payload.organisationName} on ${payload.plannedDate}. Reason: "${payload.reason}"`,
-        entityType: 'visit',
-        entityId: payload.visitId,
-      });
-    }
+    const reason = `Reason: "${payload.reason}"`;
+    await this.notifyVisitChange(
+      payload,
+      'visit_cancelled',
+      { title: 'Field Visit Cancelled by Employee', body: `${payload.employeeName} cancelled visit to ${payload.organisationName} on ${payload.plannedDate}. ${reason}` },
+      (actor) => ({
+        employee: { title: `Your visit was cancelled: ${payload.organisationName}`, body: `${actor} cancelled your visit to ${payload.organisationName} on ${payload.plannedDate}. ${reason}` },
+        manager: { title: `Field visit cancelled: ${payload.employeeName}`, body: `${actor} cancelled ${payload.employeeName}'s visit to ${payload.organisationName} on ${payload.plannedDate}. ${reason}` },
+      }),
+    );
   }
 
   @OnEvent(AppEvents.VISIT_RESCHEDULED)
@@ -673,17 +814,19 @@ export class NotificationListener {
     newDate: string;
     reason: string;
     managerId?: string;
+    actorId?: string;
+    actorName?: string;
   }) {
-    if (payload.managerId && payload.managerId !== payload.employeeId) {
-      await this.createAndPushNotification({
-        userId: payload.managerId,
-        type: 'visit_rescheduled',
-        title: 'Field Visit Rescheduled by Employee',
-        body: `${payload.employeeName} rescheduled visit to ${payload.organisationName} from ${payload.oldDate} to ${payload.newDate}. Reason: "${payload.reason}"`,
-        entityType: 'visit',
-        entityId: payload.visitId,
-      });
-    }
+    const move = `from ${payload.oldDate} to ${payload.newDate}. Reason: "${payload.reason}"`;
+    await this.notifyVisitChange(
+      payload,
+      'visit_rescheduled',
+      { title: 'Field Visit Rescheduled by Employee', body: `${payload.employeeName} rescheduled visit to ${payload.organisationName} ${move}` },
+      (actor) => ({
+        employee: { title: `Your visit was rescheduled: ${payload.organisationName}`, body: `${actor} moved your visit to ${payload.organisationName} ${move}` },
+        manager: { title: `Field visit rescheduled: ${payload.employeeName}`, body: `${actor} moved ${payload.employeeName}'s visit to ${payload.organisationName} ${move}` },
+      }),
+    );
   }
 
   @OnEvent(AppEvents.VISIT_MODIFIED)
@@ -695,17 +838,19 @@ export class NotificationListener {
     changeDetails: string;
     reason?: string;
     managerId?: string;
+    actorId?: string;
+    actorName?: string;
   }) {
-    if (payload.managerId && payload.managerId !== payload.employeeId) {
-      await this.createAndPushNotification({
-        userId: payload.managerId,
-        type: 'visit_modified',
-        title: 'Field Visit Modified by Employee',
-        body: `${payload.employeeName} updated visit to ${payload.organisationName}: ${payload.changeDetails}.${payload.reason ? ` Reason: "${payload.reason}"` : ''}`,
-        entityType: 'visit',
-        entityId: payload.visitId,
-      });
-    }
+    const why = payload.reason ? ` Reason: "${payload.reason}"` : '';
+    await this.notifyVisitChange(
+      payload,
+      'visit_modified',
+      { title: 'Field Visit Modified by Employee', body: `${payload.employeeName} updated visit to ${payload.organisationName}: ${payload.changeDetails}.${why}` },
+      (actor) => ({
+        employee: { title: `Your visit was changed: ${payload.organisationName}`, body: `${actor} updated your visit to ${payload.organisationName}: ${payload.changeDetails}.${why}` },
+        manager: { title: `Field visit changed: ${payload.employeeName}`, body: `${actor} updated ${payload.employeeName}'s visit to ${payload.organisationName}: ${payload.changeDetails}.${why}` },
+      }),
+    );
   }
 
   @OnEvent(AppEvents.VISIT_COMPLETED)
@@ -1781,6 +1926,34 @@ export class NotificationListener {
 
     if (eventId) {
       await this.outboxService.markEventProcessed(eventId, 'NotificationListener.followUpCompleted');
+    }
+  }
+
+  @OnEvent(AppEvents.FOLLOWUP_DUE)
+  async handleFollowUpDue(eventInput: any) {
+    const { payload, eventId } = this.unpackEvent<{
+      followUpId: string;
+      assignedTo: string;
+      dueDate: string;
+      dueTime?: string | null;
+      organisationName?: string;
+    }>(eventInput);
+
+    if (eventId && (await this.outboxService.isEventProcessed(eventId, 'NotificationListener.followUpDue'))) {
+      return;
+    }
+
+    await this.createAndPushNotification({
+      userId: payload.assignedTo,
+      type: 'followup_due',
+      title: `Follow-up due today: ${payload.organisationName || 'Client'}`,
+      body: `Your follow-up with ${payload.organisationName || 'the client'} is due today${payload.dueTime ? ` at ${String(payload.dueTime).slice(0, 5)}` : ''}. Log the touchpoint once it is done.`,
+      entityType: 'follow_up',
+      entityId: payload.followUpId,
+    });
+
+    if (eventId) {
+      await this.outboxService.markEventProcessed(eventId, 'NotificationListener.followUpDue');
     }
   }
 

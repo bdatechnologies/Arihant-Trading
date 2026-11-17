@@ -57,6 +57,7 @@ export const COMMAND_SECTIONS: CommandSectionDef[] = [
     href: '/visits',
     module: 'visits',
     items: [
+      { key: 'missed', label: 'Visits not reported', tab: 'Not reported', help: 'Visits whose day has passed with no visit report: missed, or made but not written up.', kind: 'action' },
       { key: 'upcoming', label: 'Upcoming visits', tab: 'Upcoming', help: 'Visits still to be made in the next 7 days, today included.', kind: 'watch' },
       { key: 'travelling', label: 'People in the field today', tab: 'In the field', help: 'People with a customer visit still to be made today.', kind: 'watch' },
       { key: 'cancelled_rescheduled', label: 'Cancelled or rescheduled', tab: 'Cancelled', help: 'Visits planned in the period that were cancelled, and visits moved to a new date not yet made.', kind: 'watch', period: true },
@@ -82,6 +83,7 @@ export const COMMAND_SECTIONS: CommandSectionDef[] = [
     module: 'tenders',
     items: [
       { key: 'deadlines', label: 'Upcoming deadlines', tab: 'Deadlines', help: 'Bids not yet submitted whose submission deadline is in the next 7 days.', kind: 'action' },
+      { key: 'missed_deadlines', label: 'Missed deadlines', tab: 'Missed', help: 'Bids never submitted whose submission deadline has passed: to close out or explain.', kind: 'action' },
       { key: 'approvals', label: 'Pending approvals', tab: 'Approvals', help: 'Bids waiting for a go / no-go approval (not on hold).', kind: 'action' },
       { key: 'pq_pipeline', label: 'PQ pipeline', tab: 'PQ', help: 'Pre-qualification tenders still in play: not won, lost, cancelled, rejected or on hold.', kind: 'watch' },
       { key: 'general_pipeline', label: 'General / MHA pipeline', tab: 'General / MHA', help: 'General and MHA tenders still in play: not won, lost, cancelled, rejected or on hold.', kind: 'watch' },

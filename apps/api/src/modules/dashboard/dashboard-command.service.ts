@@ -23,6 +23,7 @@ import {
   PROPOSAL_OUTCOME_DAY,
   TASK_OVERDUE,
   TENDER_AWAITING_APPROVAL,
+  TENDER_CHASING,
   TENDER_ROW,
   VISIT_OPEN,
   tenderClosingWithin,
@@ -126,6 +127,10 @@ const claimsHref = (statuses: readonly string[], params: Record<string, string> 
  * ------------------------------------------------------------------------------------------------------------------ */
 /** A visit still to be made (alias v). */
 export const VISIT_IS_OPEN = sql`v.status = any(${VISIT_OPEN}::text[])`;
+/** Visits register "Report overdue" (VisitsService status=overdue): still open and the visit day (IST) has passed. */
+export const visitNotReported = (today: string) => sql`${VISIT_IS_OPEN} and v.planned_date < ${today}::date`;
+/** Tenders register "Deadline: overdue" (TendersService.tenderDeadlineMatch): a pre-submission bid whose deadline passed. */
+export const TENDER_MISSED = sql`${TENDER_CHASING} and t.submission_deadline < now()`;
 /** Cities with open visits in [today, end] that could share a trip: two visits within 3 days, not one trip yet. */
 export const visitClusters = (today: string, end: string) => sql`
             with v as (
@@ -369,15 +374,25 @@ export class DashboardCommandService {
     const weekEnd = addIsoDays(c.today, 6);
     const combineEnd = addIsoDays(c.today, 13);
     const open = VISIT_IS_OPEN;
-    const [counts, upcoming, people, clusters] = await Promise.all([
+    const [counts, missedRows, upcoming, people, clusters] = await Promise.all([
       this.one(sql`
         select count(*) filter (where ${open} and v.planned_date between ${c.today}::date and ${weekEnd}::date)::int as upcoming,
                count(*) filter (where ${open} and v.planned_date = ${c.today}::date)::int as today,
                count(distinct v.assigned_to) filter (where ${open} and v.planned_date = ${c.today}::date)::int as people,
                count(*) filter (where ${open} and v.planned_date = ${c.today}::date and coalesce(v.travel_required, false))::int as travel,
                count(*) filter (where v.status = 'cancelled' and v.planned_date between ${c.from}::date and ${c.to}::date)::int as cancelled,
-               count(*) filter (where v.status = 'rescheduled')::int as rescheduled
+               count(*) filter (where v.status = 'rescheduled')::int as rescheduled,
+               count(*) filter (where ${visitNotReported(c.today)})::int as missed,
+               count(distinct v.assigned_to) filter (where ${visitNotReported(c.today)})::int as missed_people,
+               count(*) filter (where ${visitNotReported(c.today)} and v.planned_date < ${addIsoDays(c.today, -7)}::date)::int as missed_stale
         from visits v join organisations o on o.id = v.organisation_id`),
+      want.has('missed')
+        ? this.rows(sql`
+            select v.id, v.organisation_id, v.planned_date::text as day, v.purpose, o.name as org, u.full_name as rep
+            from visits v join organisations o on o.id = v.organisation_id left join users u on u.id = v.assigned_to
+            where ${visitNotReported(c.today)}
+            order by v.planned_date asc, v.start_time asc nulls last limit 5`)
+        : Promise.resolve([]),
       want.has('upcoming')
         ? this.rows(sql`
             select v.id, v.organisation_id, v.planned_date::text as day, v.purpose, o.name as org, u.full_name as rep
@@ -397,6 +412,29 @@ export class DashboardCommandService {
     ]);
 
     const out: CommandMetric[] = [];
+    if (want.has('missed')) {
+      const missed = num(counts.missed);
+      const stale = num(counts.missed_stale);
+      out.push(
+        metric('missed', {
+          value: missed,
+          detail: missed
+            ? [`${plural(num(counts.missed_people), 'person', 'people')}`, stale ? `${plural(stale, 'visit')} over a week old` : null].filter(Boolean).join(' · ')
+            : null,
+          // A visit unreported for over a week is either missed or its findings are lost — act now.
+          tone: actionTone(missed, stale > 0),
+          href: href('/visits', { status: 'overdue' }),
+          items: missedRows.map((r) => ({
+            id: r.id,
+            title: r.org,
+            subtitle: [r.rep, r.purpose].filter(Boolean).join(' · ') || null,
+            date: r.day,
+            tone: r.day < addIsoDays(c.today, -7) ? 'critical' : 'warning',
+            href: href('/visits', { customer: r.organisation_id }),
+          })),
+        }),
+      );
+    }
     if (want.has('upcoming')) {
       out.push(
         metric('upcoming', {
@@ -619,14 +657,23 @@ export class DashboardCommandService {
         from tenders t left join tender_categories tc on tc.id = t.category_id
         where ${TENDER_ROW} and ${tenderInCategory(category)}`);
 
-    const [counts, closing, approvals, pq, general] = await Promise.all([
+    const [counts, missedRows, closing, approvals, pq, general] = await Promise.all([
       this.one(sql`
         select count(*) filter (where ${tenderClosingWithin(7 * 24)})::int as week,
                count(*) filter (where ${tenderClosingWithin(48)})::int as urgent,
                count(*) filter (where ${TENDER_AWAITING_APPROVAL})::int as approvals,
                count(*) filter (where ${TENDER_AWAITING_APPROVAL} and ${tenderClosingWithin(48)})::int as approvals_urgent,
-               count(*) filter (where ${TENDER_AWAITING_APPROVAL} and t.submission_deadline < now())::int as approvals_missed
+               count(*) filter (where ${TENDER_AWAITING_APPROVAL} and t.submission_deadline < now())::int as approvals_missed,
+               count(*) filter (where ${TENDER_MISSED})::int as missed,
+               count(*) filter (where ${TENDER_MISSED} and t.submission_deadline >= now() - interval '7 days')::int as missed_week
         from tenders t where ${TENDER_ROW}`),
+      want.has('missed_deadlines')
+        ? this.rows(sql`
+            select t.id, t.tender_no, t.status, ${buyer} as buyer, t.submission_deadline as deadline
+            from tenders t left join organisations o on o.id = t.organisation_id
+            where ${TENDER_ROW} and ${TENDER_MISSED}
+            order by t.submission_deadline desc limit 5`)
+        : Promise.resolve([]),
       want.has('deadlines')
         ? this.rows(sql`
             select t.id, t.tender_no, t.status, ${buyer} as buyer, t.submission_deadline as deadline
@@ -661,6 +708,27 @@ export class DashboardCommandService {
             subtitle: [r.buyer, human(r.status)].filter(Boolean).join(' · ') || null,
             date: iso(r.deadline),
             tone: new Date(r.deadline).getTime() - Date.now() <= 48 * 3600e3 ? 'critical' : 'warning',
+            href: href('/tenders', { highlight: r.id }),
+          })),
+        }),
+      );
+    }
+    if (want.has('missed_deadlines')) {
+      const missed = num(counts.missed);
+      const lastWeek = num(counts.missed_week);
+      out.push(
+        metric('missed_deadlines', {
+          value: missed,
+          // A deadline missed in the last week is still fresh enough to chase (corrigendum, extension, explanation).
+          detail: lastWeek ? `${plural(lastWeek, 'bid')} missed in the last 7 days` : missed ? 'None in the last 7 days' : null,
+          tone: actionTone(missed, lastWeek > 0),
+          href: href('/tenders', { deadline: 'overdue' }),
+          items: missedRows.map((r) => ({
+            id: r.id,
+            title: r.tender_no || 'Tender',
+            subtitle: [r.buyer, human(r.status)].filter(Boolean).join(' · ') || null,
+            date: iso(r.deadline),
+            tone: 'critical',
             href: href('/tenders', { highlight: r.id }),
           })),
         }),

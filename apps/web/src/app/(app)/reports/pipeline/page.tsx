@@ -229,7 +229,6 @@ function PipelineReport() {
                   <Tabs
                     variant="segmented"
                     size="sm"
-                    className="min-w-max"
                     activeTab={moduleTab}
                     onChange={(id) => setModuleTab(id as PipelineModuleKey)}
                     tabs={data.modules.map((m) => ({ id: m.key, label: m.label, count: m.total }))}

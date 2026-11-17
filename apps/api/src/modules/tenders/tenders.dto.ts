@@ -11,9 +11,10 @@ import {
   IsBoolean,
   IsIn,
   Min,
+  MaxLength,
 } from 'class-validator';
 import type { TenderCategory, TenderStatus } from '@arihant/shared';
-import { TENDER_FINANCIAL_INSTRUMENT_STATUSES } from '@arihant/shared';
+import { TENDER_FINANCIAL_INSTRUMENT_STATUSES, INSTRUMENT_ACTIONS, EMD_FORMS, type InstrumentAction } from '@arihant/shared';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -873,10 +874,14 @@ export class TenderPageQueryDto {
 
 /** GET /tenders/finance/emd-tracking: one page of the instruments in the picked view. */
 export class TenderEmdTrackingQueryDto extends TenderPageQueryDto {
-  /** refund_due = EMDs awaiting refund, blocked = EMDs issued / submitted, pbg = every PBG, all = every EMD and PBG. */
+  /**
+   * action = waiting on someone (Requested / Approved), expiring = with the customer and expiring within 30 days (or
+   * lapsed), refund_due = EMDs awaiting refund, blocked = EMDs issued / submitted, pbg = every PBG / security deposit,
+   * all = every EMD, PBG and security deposit.
+   */
   @IsOptional()
-  @IsIn(['refund_due', 'blocked', 'pbg', 'all'])
-  filter?: 'refund_due' | 'blocked' | 'pbg' | 'all';
+  @IsIn(['action', 'expiring', 'refund_due', 'blocked', 'pbg', 'all'])
+  filter?: 'action' | 'expiring' | 'refund_due' | 'blocked' | 'pbg' | 'all';
 }
 
 /** GET /tenders/calendar: the IST calendar days the calendar shows (both ends inclusive; default the current IST month). */
@@ -1463,6 +1468,77 @@ export class CreateTenderFinancialInstrumentDto {
   @IsString()
   @IsOptional()
   remarks?: string;
+
+  /** Day the instrument must be in hand (defaults to the bid closing day for an EMD). */
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'required_by must be a date (YYYY-MM-DD)' })
+  required_by?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(200)
+  in_favour_of?: string;
+}
+
+/**
+ * POST /tenders/:id/financial-instruments/:instrumentId/transition — one step of the EMD / PBG workflow
+ * (packages/shared/src/emd-workflow.ts decides which steps the role may take and which facts each needs).
+ */
+export class TransitionTenderFinancialInstrumentDto {
+  @IsIn(INSTRUMENT_ACTIONS.map((a) => a.action), { message: `action must be one of: ${INSTRUMENT_ACTIONS.map((a) => a.action).join(', ')}` })
+  action!: InstrumentAction;
+
+  @IsNumber()
+  @Min(0.01, { message: 'Amount must be greater than zero' })
+  @IsOptional()
+  amount?: number;
+
+  @IsOptional()
+  @IsIn(EMD_FORMS as unknown as string[], { message: `EMD form must be one of: ${EMD_FORMS.join(', ')}` })
+  mode?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(120)
+  bank?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(120)
+  reference_number?: string;
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'issue_date must be a date (YYYY-MM-DD)' })
+  issue_date?: string;
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'expiry_date must be a date (YYYY-MM-DD)' })
+  expiry_date?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(200)
+  in_favour_of?: string;
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'received_date must be a date (YYYY-MM-DD)' })
+  received_date?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(120)
+  receipt_reference?: string;
+
+  /** Why (reject / cancel / forfeit / expire), or a note on the step. */
+  @IsString()
+  @IsOptional()
+  @MaxLength(1000)
+  reason?: string;
+
+  /** The instrument's updated_at as the screen loaded it; a newer save makes this step a conflict. */
+  @IsOptional()
+  @IsString()
+  expected_updated_at?: string;
 }
 
 export class UpdateTenderFinancialInstrumentDto {
@@ -1504,6 +1580,15 @@ export class UpdateTenderFinancialInstrumentDto {
   @IsString()
   @IsOptional()
   remarks?: string;
+
+  @IsOptional()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'required_by must be a date (YYYY-MM-DD)' })
+  required_by?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(200)
+  in_favour_of?: string;
 }
 
 export class CreateTenderCommentDto {

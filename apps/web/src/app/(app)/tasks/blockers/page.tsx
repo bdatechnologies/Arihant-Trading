@@ -10,6 +10,7 @@ import { useSearchParams } from 'next/navigation';
 import { ArrowRightLeft, Ban, CheckCircle2, Clock, ExternalLink, Eye, Flag, Search, ShieldAlert, ShieldCheck } from 'lucide-react';
 import { Badge, Button, Card, EmptyState, FilterMenu, InfoCallout, PageContainer, PageHeader, PageLoader } from '@/components/ui';
 import { formatTaskDateTime } from '@arihant/shared';
+import { useAuth } from '@/lib/auth-context';
 import { notifyTasksChanged, useTaskSummary } from '../_lib/task-lib';
 import { DueText, FlagChip, LoadMoreRow, PriorityBadge, TaskConflictCallout, TaskViewMenu, blockerTypeLabel, useDebouncedValue, useToaster } from '../_lib/task-ui';
 import { TaskActionDialog, type ActionTask, type TaskDialogAction } from '../_lib/TaskActions';
@@ -17,6 +18,7 @@ import { blockerActionTask as toActionTask, blockerDecisions, usePendingQueue, w
 
 export default function BlockerQueuePage() {
   const { summary } = useTaskSummary();
+  const { user } = useAuth();
   const { push, Toaster } = useToaster();
   // ?scope=all (the command dashboard's "Blockers to decide") opens every pending blocker; the API allows it to admin-like roles only
   const searchParams = useSearchParams();
@@ -113,7 +115,7 @@ export default function BlockerQueuePage() {
             <Card key={b.id} className={`p-4 space-y-3 ${b.sla_breached ? 'border-[#9A3412]/40' : ''}`}>
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <Link href={`/tasks/${b.task_id}`} className="font-mono text-xs font-semibold text-[#0F5E63] hover:underline inline-flex items-center gap-1">
+                  <Link href={`/tasks/${b.task_id}`} className="-my-1 py-1 font-mono text-xs font-semibold text-[#0F5E63] hover:underline inline-flex items-center gap-1">
                     {b.task_number} <ExternalLink className="h-3 w-3" />
                   </Link>
                   <div className="font-medium text-[#14213D] break-words">{b.task_title}</div>
@@ -135,7 +137,7 @@ export default function BlockerQueuePage() {
                   {b.extension_count >= 2 && <FlagChip>{b.extension_count} extensions so far</FlagChip>}
                 </div>
                 <p className="text-sm text-[#14213D] whitespace-pre-wrap break-words">{b.description}</p>
-                <p className="text-[11px] text-[#4A5568]">
+                <p className="text-[11px] text-[#4A5568] break-words">
                   Raised {formatTaskDateTime(b.created_at)}
                   {b.dependency_user_name ? ` · waiting on ${b.dependency_user_name}` : ''}
                   {b.dependency_customer_name ? ` · customer ${b.dependency_customer_name}` : ''}
@@ -146,6 +148,17 @@ export default function BlockerQueuePage() {
                   {b.requested_new_deadline ? ` · asks for ${formatTaskDateTime(b.requested_new_deadline)}` : ''}
                 </p>
               </div>
+              {b.escalated_to_name && (
+                <div className="flex items-start gap-2 rounded-lg border border-[#E9C9B4] bg-[#FFF8EB] px-3 py-2 text-xs text-[#7C2D12]">
+                  <ShieldAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden />
+                  <div className="min-w-0">
+                    <span className="font-semibold">
+                      {b.escalated_to === user?.id ? `Escalated to you${b.escalated_by_name ? ` by ${b.escalated_by_name}` : ''}` : `Escalated to ${b.escalated_to_name}${b.escalated_by_name ? ` by ${b.escalated_by_name}` : ''}`}
+                    </span>
+                    {b.escalation_reason && <span className="break-words"> — {b.escalation_reason}</span>}
+                  </div>
+                </div>
+              )}
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="text-xs text-[#4A5568] flex items-center gap-2">
                   Deadline <DueText deadline={b.deadline} open compact />

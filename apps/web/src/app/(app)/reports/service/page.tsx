@@ -284,7 +284,6 @@ function ServiceReport() {
                 <Tabs
                   variant="segmented"
                   size="sm"
-                  className="min-w-max"
                   activeTab={groupBy}
                   onChange={(id) => filters.set({ group_by: id === 'engineer' ? null : id })}
                   tabs={[

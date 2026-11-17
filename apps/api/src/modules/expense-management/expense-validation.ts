@@ -5,6 +5,7 @@
  * checks (duplicates, overlaps, inactive masters) itself.
  */
 import { BadRequestException } from '@nestjs/common';
+import { stripHtmlTags } from '../../common/utils/strip-html.js';
 import {
   CATEGORY_DETAIL_KIND,
   MEAL_TYPES,
@@ -37,12 +38,10 @@ export function throwIfErrors(errors: FieldErrors, message?: string) {
   if (Object.keys(errors).length > 0) throw new ExpenseValidationException(errors, message);
 }
 
-/** Strips HTML tags and control characters, trims, and returns null for empty input. */
+/** Strips HTML tags (a lone "<" / ">" is kept) and control characters, trims, and returns null for empty input. */
 export function sanitizeText(value: unknown, maxLength: number): string | null {
   if (value === null || value === undefined) return null;
-  const s = String(value)
-    .replace(/<[^>]*>/g, '')
-    .replace(/[<>]/g, '')
+  const s = stripHtmlTags(String(value))
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
     .trim();
@@ -63,7 +62,7 @@ export function readText(
     errors[field] = `${label} must be text.`;
     return null;
   }
-  const raw = value === null || value === undefined ? '' : String(value).replace(/<[^>]*>/g, '').trim();
+  const raw = value === null || value === undefined ? '' : stripHtmlTags(String(value)).trim();
   if (raw.length > maxLength) {
     errors[field] = `${label} must be at most ${maxLength} characters.`;
     return null;

@@ -54,6 +54,11 @@ export interface PendingBlocker {
   sla_breached: boolean;
   repeated_flag: boolean;
   is_task_overdue: boolean;
+  /** The task's open escalation, if any. */
+  escalated_to: string | null;
+  escalated_to_name: string | null;
+  escalated_by_name: string | null;
+  escalation_reason: string | null;
 }
 
 export type ApprovalRow = TaskRow & { evidence: TaskAttachment[]; waiting_hours: number; sla_breached: boolean };

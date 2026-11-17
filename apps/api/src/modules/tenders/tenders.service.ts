@@ -23,6 +23,21 @@ import {
   istDateTime,
   istEndOfDay,
   isoDaysBetween,
+  EMD_FORMS,
+  INSTRUMENT_CLOSED_STATUSES,
+  INSTRUMENT_INITIAL_STATUSES,
+  INSTRUMENT_LIVE_STATUSES,
+  INSTRUMENT_RECORD_PAID_ROLES,
+  INSTRUMENT_UNPAID_STATUSES,
+  PERFORMANCE_INSTRUMENT_TYPES,
+  REFUNDABLE_INSTRUMENT_TYPES,
+  TENDER_STAGE_EFFECTS,
+  instrumentActionDef,
+  validateInstrumentAction,
+  type InstrumentField,
+  type InstrumentHistoryEntry,
+  type InstrumentInput,
+  type TenderFinancialInstrumentStatus,
   type Database,
   type AuthUser,
   type PaginatedResult,
@@ -42,6 +57,7 @@ import {
   TenderQueryDto,
   TenderPageQueryDto,
   TenderEmdTrackingQueryDto,
+  TransitionTenderFinancialInstrumentDto,
   TenderCalendarQueryDto,
   TransitionTenderDto,
   HoldTenderDto,
@@ -1061,11 +1077,7 @@ export class TendersService {
         .where('tender_corrigenda.tender_id', '=', id)
         .orderBy('tender_corrigenda.created_at', 'desc')
         .execute(),
-      this.db
-        .selectFrom('tender_financial_instruments')
-        .leftJoin('users', 'tender_financial_instruments.finance_owner_id', 'users.id')
-        .selectAll('tender_financial_instruments')
-        .select('users.full_name as finance_owner_name')
+      this.instrumentsQuery()
         .where('tender_financial_instruments.tender_id', '=', id)
         .orderBy('tender_financial_instruments.created_at', 'desc')
         .execute(),
@@ -1480,9 +1492,11 @@ export class TendersService {
           .execute();
       }
 
-      // Auto-create EMD financial instrument if required
+      // Auto-create the EMD request if the bid needs one: it starts the EMD workflow (Management approves,
+      // Accounts pays), needed in hand by the bid closing day.
       if (dto.emd_required) {
-        await trx
+        const emdMode = dto.emd_mode && (EMD_FORMS as readonly string[]).includes(dto.emd_mode) ? dto.emd_mode : 'Online';
+        const emd = await trx
           .insertInto('tender_financial_instruments')
           .values({
             tender_id: tender.id,
@@ -1490,11 +1504,23 @@ export class TendersService {
             // Instruments are never ₹0 (CHECK amount > 0, migration 035): an EMD without a figure yet is NULL for
             // Finance to fill in. (shared types still declare amount non-null, hence the cast.)
             amount: Number(dto.emd_amount || dto.emd_fee) > 0 ? Number(dto.emd_amount || dto.emd_fee) : null,
-            mode: dto.emd_mode || 'Online',
+            mode: emdMode,
             status: 'Requested',
             remarks: dto.emd_exemption_reason || null,
+            requested_by: user.id,
+            required_by: this.istDay((tender.bid_closing_date || tender.submission_deadline) as any),
           })
-          .execute();
+          .returning(['id'])
+          .executeTakeFirstOrThrow();
+        await this.writeInstrumentHistory(trx, {
+          instrument_id: emd.id,
+          tender_id: tender.id,
+          action: 'request',
+          from_status: null,
+          to_status: 'Requested',
+          note: 'Raised with the tender',
+          changed_by: user.id,
+        });
       }
 
       // Initial status history
@@ -1997,6 +2023,13 @@ export class TendersService {
       // Writes that belong to this stage change (result snapshot, finance follow-ups …) commit with it.
       if (options?.inTransaction) {
         await options.inTransaction(trx);
+      }
+
+      // EMD / tender fee follow the bid: submitted with it; refund due when it is lost, cancelled or rejected
+      // internally, and any request not yet paid is cancelled (TENDER_STAGE_EFFECTS). The refund clock starts on the
+      // declared result day when one is given.
+      if (from !== to) {
+        await this.syncInstrumentsForStage(trx, existing, to, this.istDay((dto as any).result_date) || todayInKolkata());
       }
 
       // Write activity timeline
@@ -2640,29 +2673,34 @@ export class TendersService {
         })
         .execute();
 
-      // Finance Integration: If lost, automatically move EMD status to Refund Due
-      if (outcome === 'lost') {
-        await trx
-          .updateTable('tender_financial_instruments')
-          .set({ status: 'Refund Due', updated_at: new Date() })
-          .where('tender_id', '=', id)
-          .where('instrument_type', '=', 'EMD')
-          .where('status', 'in', ['Issued', 'Submitted', 'Requested', 'Approved'])
-          .execute();
-      }
+      // A lost bid's EMD already moved with the stage change above (paid → Refund Due, unpaid → Cancelled).
 
       // Finance Integration: If won and PBG required, create PBG instrument request
       if (outcome === 'won' && (dto as any).pbg_required) {
-        await trx
+        const pbg = await trx
           .insertInto('tender_financial_instruments')
           .values({
             tender_id: id,
             instrument_type: 'PBG',
             amount: Number((dto as any).pbg_amount),
+            mode: 'BG',
             status: 'Requested',
             remarks: `PBG due by ${(dto as any).pbg_due_date || 'LoA deadline'}`,
+            requested_by: user.id,
+            required_by: calendarDay((dto as any).pbg_due_date) || null,
           })
-          .execute();
+          .returning(['id', 'instrument_type', 'amount', 'requested_by', 'finance_owner_id'])
+          .executeTakeFirstOrThrow();
+        await this.writeInstrumentHistory(trx, {
+          instrument_id: pbg.id,
+          tender_id: id,
+          action: 'request',
+          from_status: null,
+          to_status: 'Requested',
+          note: 'Raised with the win (LoA / PO)',
+          changed_by: user.id,
+        });
+        await this.queueInstrumentEvent(trx, existing, pbg, { action: 'request', fromStatus: null, toStatus: 'Requested', note: 'Raised with the win', actorId: user.id });
       }
 
       // Backwards compatibility with tender_outcomes
@@ -5006,20 +5044,99 @@ export class TendersService {
   // Financial Instruments (EMD, PBG, Fees)
   // =========================================================================
 
+  /** Instrument row plus the names of the people on each workflow step. */
+  private instrumentsQuery(db: Kysely<Database> = this.db) {
+    return db
+      .selectFrom('tender_financial_instruments')
+      .leftJoin('users as fo', 'fo.id', 'tender_financial_instruments.finance_owner_id')
+      .leftJoin('users as rq', 'rq.id', 'tender_financial_instruments.requested_by')
+      .leftJoin('users as ap', 'ap.id', 'tender_financial_instruments.approved_by')
+      .leftJoin('users as iss', 'iss.id', 'tender_financial_instruments.issued_by')
+      .selectAll('tender_financial_instruments')
+      .select([
+        'fo.full_name as finance_owner_name',
+        'rq.full_name as requested_by_name',
+        'ap.full_name as approved_by_name',
+        'iss.full_name as issued_by_name',
+      ]);
+  }
+
   async getFinancialInstruments(tenderId: string, user: AuthUser) {
     const tender = await this.findOne(tenderId, user);
     await this.assertTenderVisible(user, tender);
 
-    return this.db
-      .selectFrom('tender_financial_instruments')
-      .leftJoin('users', 'tender_financial_instruments.finance_owner_id', 'users.id')
-      .selectAll('tender_financial_instruments')
-      .select('users.full_name as finance_owner_name')
-      .where('tender_id', '=', tenderId)
+    return this.instrumentsQuery()
+      .where('tender_financial_instruments.tender_id', '=', tenderId)
       .orderBy('tender_financial_instruments.created_at', 'desc')
       .execute();
   }
 
+  /** Append one row to the instrument's lifecycle trail (changed_by null = a move the system made). */
+  private async writeInstrumentHistory(
+    db: Kysely<Database>,
+    row: { instrument_id: string; tender_id: string; action: string; from_status: string | null; to_status: string; note?: string | null; changes?: Record<string, { from: unknown; to: unknown }>; changed_by: string | null },
+  ) {
+    await db
+      .insertInto('tender_financial_instrument_history')
+      .values({
+        instrument_id: row.instrument_id,
+        tender_id: row.tender_id,
+        action: row.action,
+        from_status: row.from_status,
+        to_status: row.to_status,
+        note: row.note?.trim() || null,
+        changes: JSON.stringify(row.changes || {}) as any,
+        changed_by: row.changed_by,
+      })
+      .execute();
+  }
+
+  /** { field: { from, to } } for the fields a step actually changed. */
+  private instrumentChanges(before: Record<string, any>, patch: Record<string, any>) {
+    const norm = (v: any) => (v === undefined || v === null || v === '' ? null : v instanceof Date ? v.toISOString() : String(v));
+    const out: Record<string, { from: unknown; to: unknown }> = {};
+    for (const [k, v] of Object.entries(patch)) {
+      if (['updated_at', 'approved_at', 'issued_at', 'submitted_at'].includes(k)) continue;
+      const prev = k.endsWith('_date') || k === 'required_by' || k === 'refund_due_on' ? calendarDay(before[k]) : before[k];
+      if (norm(prev) !== norm(v)) out[k] = { from: prev ?? null, to: v ?? null };
+    }
+    return out;
+  }
+
+  private queueInstrumentEvent(
+    db: Kysely<Database>,
+    tender: { id: string; tender_number?: string | null; tender_no?: string | null; tender_owner_id?: string | null; owner?: string | null; assigned_to?: string | null },
+    inst: { id: string; instrument_type: string; amount: unknown; requested_by?: string | null; finance_owner_id?: string | null },
+    move: { action: string; fromStatus: string | null; toStatus: string; note?: string | null; actorId: string | null },
+  ) {
+    return this.outboxService.queueEvent(db, {
+      eventType: AppEvents.TENDER_INSTRUMENT_STATUS_CHANGED,
+      aggregateType: 'TENDER',
+      aggregateId: tender.id,
+      actorId: move.actorId || undefined,
+      payload: {
+        tenderId: tender.id,
+        tenderNo: tender.tender_number || tender.tender_no || null,
+        instrumentId: inst.id,
+        instrumentType: inst.instrument_type,
+        amount: inst.amount === null || inst.amount === undefined ? null : Number(inst.amount),
+        action: move.action,
+        fromStatus: move.fromStatus,
+        toStatus: move.toStatus,
+        note: move.note || null,
+        requestedBy: inst.requested_by || null,
+        financeOwnerId: inst.finance_owner_id || null,
+        tenderOwnerId: tender.tender_owner_id || tender.owner || null,
+        assignedPersonId: tender.assigned_to || null,
+        actorId: move.actorId,
+      },
+    });
+  }
+
+  /**
+   * A new EMD / PBG / fee on the tender. It starts as a request (Management approves, Accounts pays); Finance may
+   * instead record one already paid outside the system (status Issued / Submitted) with its issue facts.
+   */
   async addFinancialInstrument(tenderId: string, dto: CreateTenderFinancialInstrumentDto, user: AuthUser) {
     const tender = await this.findOne(tenderId, user);
     await this.assertTenderVisible(user, tender);
@@ -5028,29 +5145,71 @@ export class TendersService {
     if (!Number.isFinite(amount) || amount <= 0) {
       throw new BadRequestException(`${dto.instrument_type || 'Instrument'} amount must be greater than zero.`);
     }
+    const status = (dto.status || 'Requested') as TenderFinancialInstrumentStatus;
+    if (!INSTRUMENT_INITIAL_STATUSES.includes(status)) {
+      throw new BadRequestException(`A new instrument starts as Requested (or, for Finance, Issued / Submitted when already paid) — not ${status}.`);
+    }
+    const mode = dto.mode || 'Online';
+    if (dto.mode && !(EMD_FORMS as readonly string[]).includes(dto.mode)) {
+      throw new BadRequestException(`EMD form must be one of: ${EMD_FORMS.join(', ')}.`);
+    }
+    if (status !== 'Requested') {
+      // Recording a paid instrument = the issue step's checks, by a role that may issue.
+      if (!(INSTRUMENT_RECORD_PAID_ROLES as readonly string[]).includes(user.role)) {
+        throw new ForbiddenException('Only Accounts or Management can record an instrument that is already paid.');
+      }
+      const errors = validateInstrumentAction(
+        'issue',
+        { instrument_type: dto.instrument_type, status: 'Approved', mode, amount },
+        { amount, mode, bank: dto.bank, reference_number: dto.reference_number, issue_date: dto.issue_date, expiry_date: dto.expiry_date },
+        user.role,
+        todayInKolkata(),
+      );
+      if (errors.length) throw new BadRequestException(errors.join(' '));
+    }
+    const closing = this.istDay((tender.bid_closing_date || tender.submission_deadline) as any);
 
-    const inst = await this.db
-      .insertInto('tender_financial_instruments')
-      .values({
+    const inst = await this.db.transaction().execute(async (trx) => {
+      const row = await trx
+        .insertInto('tender_financial_instruments')
+        .values({
+          tender_id: tenderId,
+          instrument_type: dto.instrument_type,
+          amount,
+          mode,
+          reference_number: dto.reference_number?.trim() || null,
+          bank: dto.bank?.trim() || null,
+          issue_date: dto.issue_date || null,
+          expiry_date: dto.expiry_date || null,
+          status,
+          finance_owner_id: dto.finance_owner_id || null,
+          remarks: dto.remarks?.trim() || null,
+          requested_by: user.id,
+          required_by: dto.required_by || (dto.instrument_type === 'EMD' || dto.instrument_type === 'Tender Fee' ? closing : null),
+          in_favour_of: dto.in_favour_of?.trim() || null,
+          ...(status !== 'Requested' ? { issued_by: user.id, issued_at: new Date() } : {}),
+          ...(status === 'Submitted' ? { submitted_at: new Date() } : {}),
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      await this.writeInstrumentHistory(trx, {
+        instrument_id: row.id,
         tender_id: tenderId,
-        instrument_type: dto.instrument_type,
-        amount,
-        mode: dto.mode || 'Online',
-        reference_number: dto.reference_number || null,
-        bank: dto.bank || null,
-        issue_date: dto.issue_date || null,
-        expiry_date: dto.expiry_date || null,
-        status: dto.status || 'Requested',
-        finance_owner_id: dto.finance_owner_id || null,
-        remarks: dto.remarks || null,
-      })
-      .returningAll()
-      .executeTakeFirstOrThrow();
+        action: status === 'Requested' ? 'request' : 'record',
+        from_status: null,
+        to_status: status,
+        note: dto.remarks || null,
+        changed_by: user.id,
+      });
+      await this.queueInstrumentEvent(trx, tender, row, { action: status === 'Requested' ? 'request' : 'record', fromStatus: null, toStatus: status, note: dto.remarks, actorId: user.id });
+      return row;
+    });
+    this.outboxService.triggerImmediate();
 
     await this.logActivity(
       tenderId,
       'FINANCIAL_INSTRUMENT_REQUESTED',
-      `${dto.instrument_type} of ₹${dto.amount} logged (${dto.status || 'Requested'})`,
+      `${dto.instrument_type} of ₹${amount.toLocaleString('en-IN')} ${status === 'Requested' ? 'requested' : `recorded as ${status}`}`,
       user.id,
     );
     this.audit(user.id, tenderId, 'financial_instrument_added', null, {
@@ -5062,6 +5221,10 @@ export class TendersService {
     return inst;
   }
 
+  /**
+   * Corrects an instrument's details (bank, number, beneficiary, owner, remarks …). The status only moves through
+   * transitionFinancialInstrument; a closed instrument (refunded, released, forfeited …) is no longer edited.
+   */
   async updateFinancialInstrument(
     tenderId: string,
     instrumentId: string,
@@ -5071,45 +5234,75 @@ export class TendersService {
     const tender = await this.findOne(tenderId, user);
     await this.assertTenderVisible(user, tender);
 
-    if (dto.amount !== undefined && (!Number.isFinite(Number(dto.amount)) || Number(dto.amount) <= 0)) {
-      throw new BadRequestException('Instrument amount must be greater than zero.');
-    }
-
-    const updateData: any = { updated_at: new Date() };
-    if (dto.amount !== undefined) updateData.amount = dto.amount;
-    if (dto.mode !== undefined) updateData.mode = dto.mode;
-    if (dto.reference_number !== undefined) updateData.reference_number = dto.reference_number;
-    if (dto.bank !== undefined) updateData.bank = dto.bank;
-    if (dto.issue_date !== undefined) updateData.issue_date = dto.issue_date;
-    if (dto.expiry_date !== undefined) updateData.expiry_date = dto.expiry_date;
-    if (dto.status !== undefined) updateData.status = dto.status;
-    if (dto.finance_owner_id !== undefined) updateData.finance_owner_id = dto.finance_owner_id;
-    if (dto.remarks !== undefined) updateData.remarks = dto.remarks;
-
     const before = await this.db
       .selectFrom('tender_financial_instruments')
       .selectAll()
       .where('id', '=', instrumentId)
       .where('tender_id', '=', tenderId)
       .executeTakeFirst();
+    if (!before) throw new NotFoundException(`Financial instrument ${instrumentId} not found`);
 
-    const updated = await this.db
-      .updateTable('tender_financial_instruments')
-      .set(updateData)
-      .where('id', '=', instrumentId)
-      .where('tender_id', '=', tenderId)
-      .returningAll()
-      .executeTakeFirst();
+    if (dto.status !== undefined && dto.status !== before.status) {
+      throw new BadRequestException(
+        `The status moves through the EMD workflow — use POST /tenders/${tenderId}/financial-instruments/${instrumentId}/transition (e.g. action "issue").`,
+      );
+    }
+    if ((INSTRUMENT_CLOSED_STATUSES as readonly string[]).includes(before.status)) {
+      throw new BadRequestException(`This ${before.instrument_type} is ${before.status}; its record is closed.`);
+    }
+    if (dto.amount !== undefined && (!Number.isFinite(Number(dto.amount)) || Number(dto.amount) <= 0)) {
+      throw new BadRequestException('Instrument amount must be greater than zero.');
+    }
+    // Once paid, the amount and dates are the bank's — changed only through a workflow step (extend for the expiry).
+    const paid = (INSTRUMENT_LIVE_STATUSES as readonly string[]).includes(before.status);
+    if (paid && (dto.amount !== undefined || dto.issue_date !== undefined || dto.expiry_date !== undefined)) {
+      const changed =
+        (dto.amount !== undefined && Number(dto.amount) !== Number(before.amount)) ||
+        (dto.issue_date !== undefined && dto.issue_date !== calendarDay(before.issue_date as any)) ||
+        (dto.expiry_date !== undefined && dto.expiry_date !== calendarDay(before.expiry_date as any));
+      if (changed) throw new BadRequestException('A paid instrument keeps its amount and dates; use "Extend validity" for a new expiry date.');
+    }
+    if (dto.mode !== undefined && !(EMD_FORMS as readonly string[]).includes(dto.mode)) {
+      throw new BadRequestException(`EMD form must be one of: ${EMD_FORMS.join(', ')}.`);
+    }
 
-    if (!updated) throw new NotFoundException(`Financial instrument ${instrumentId} not found`);
-    await this.logActivity(
-      tenderId,
-      'FINANCIAL_INSTRUMENT_UPDATED',
-      `${updated.instrument_type} updated to status "${updated.status}"`,
-      user.id,
-    );
-    const { updated_at, ...instrumentFields } = updateData;
-    const diff = before ? this.changedFields(before as Record<string, any>, instrumentFields) : null;
+    const updateData: Record<string, any> = {};
+    if (dto.amount !== undefined) updateData.amount = dto.amount;
+    if (dto.mode !== undefined) updateData.mode = dto.mode;
+    if (dto.reference_number !== undefined) updateData.reference_number = dto.reference_number?.trim() || null;
+    if (dto.bank !== undefined) updateData.bank = dto.bank?.trim() || null;
+    if (dto.issue_date !== undefined) updateData.issue_date = dto.issue_date || null;
+    if (dto.expiry_date !== undefined) updateData.expiry_date = dto.expiry_date || null;
+    if (dto.finance_owner_id !== undefined) updateData.finance_owner_id = dto.finance_owner_id || null;
+    if (dto.remarks !== undefined) updateData.remarks = dto.remarks?.trim() || null;
+    if (dto.required_by !== undefined) updateData.required_by = dto.required_by || null;
+    if (dto.in_favour_of !== undefined) updateData.in_favour_of = dto.in_favour_of?.trim() || null;
+
+    const changes = this.instrumentChanges(before, updateData);
+    if (!Object.keys(changes).length) return before;
+
+    const updated = await this.db.transaction().execute(async (trx) => {
+      const row = await trx
+        .updateTable('tender_financial_instruments')
+        .set({ ...updateData, updated_at: new Date() })
+        .where('id', '=', instrumentId)
+        .where('tender_id', '=', tenderId)
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      await this.writeInstrumentHistory(trx, {
+        instrument_id: instrumentId,
+        tender_id: tenderId,
+        action: 'edit',
+        from_status: before.status,
+        to_status: before.status,
+        changes,
+        changed_by: user.id,
+      });
+      return row;
+    });
+
+    await this.logActivity(tenderId, 'FINANCIAL_INSTRUMENT_UPDATED', `${updated.instrument_type} details corrected`, user.id);
+    const diff = this.changedFields(before as Record<string, any>, updateData);
     if (diff) {
       this.audit(user.id, tenderId, 'financial_instrument_updated', { instrument_type: updated.instrument_type, ...diff.previous }, { instrument_type: updated.instrument_type, ...diff.next });
     }
@@ -5117,9 +5310,206 @@ export class TendersService {
   }
 
   /**
-   * Finance, EMD & PBG view: one page of the instruments in the picked view (`filter`: refund_due | blocked | pbg | all,
-   * default all), newest first. The KPI totals (EMD blocked, refunds due, refunds pending > 30 days, active PBGs) and
-   * each view's count are aggregated in SQL over every EMD / PBG in scope, so they never depend on the page loaded.
+   * One step of the EMD / PBG workflow (approve, issue, submit, mark refund due, record refund, release, extend,
+   * expire, forfeit, reject, cancel). The shared machine decides whether the caller's role may take it from the
+   * current status and which facts it needs; the step, its facts and who took it go to the append-only trail.
+   * A PBG / security deposit submitted on a won bid sends that bid's EMD to Refund Due.
+   */
+  async transitionFinancialInstrument(tenderId: string, instrumentId: string, dto: TransitionTenderFinancialInstrumentDto, user: AuthUser) {
+    const tender = await this.findOne(tenderId, user);
+    await this.assertTenderVisible(user, tender);
+
+    const inst = await this.db
+      .selectFrom('tender_financial_instruments')
+      .selectAll()
+      .where('id', '=', instrumentId)
+      .where('tender_id', '=', tenderId)
+      .executeTakeFirst();
+    if (!inst) throw new NotFoundException(`Financial instrument ${instrumentId} not found`);
+    if (dto.expected_updated_at && new Date(dto.expected_updated_at).getTime() !== new Date(inst.updated_at).getTime()) {
+      throw new ConflictException(`This ${inst.instrument_type} was updated by someone else — refresh and try again.`);
+    }
+
+    const today = todayInKolkata();
+    const input: InstrumentInput = {
+      amount: dto.amount,
+      mode: dto.mode,
+      bank: dto.bank,
+      reference_number: dto.reference_number,
+      issue_date: dto.issue_date,
+      expiry_date: dto.expiry_date,
+      in_favour_of: dto.in_favour_of,
+      received_date: dto.received_date,
+      receipt_reference: dto.receipt_reference,
+      reason: dto.reason,
+    };
+    const shape = {
+      instrument_type: inst.instrument_type,
+      status: inst.status,
+      mode: inst.mode,
+      amount: inst.amount,
+      bank: inst.bank,
+      reference_number: inst.reference_number,
+      in_favour_of: inst.in_favour_of,
+      issue_date: calendarDay(inst.issue_date as any),
+      expiry_date: calendarDay(inst.expiry_date as any),
+    };
+    const errors = validateInstrumentAction(dto.action, shape, input, user.role, today);
+    if (errors.length) throw new BadRequestException(errors.join(' '));
+    const def = instrumentActionDef(dto.action)!;
+    // Segregation of duties: the person who asked for the money does not approve it (admin excepted).
+    if (def.action === 'approve' && inst.requested_by && user.role !== 'admin') {
+      assertNotSelfApproval(user.id, inst.requested_by, 'approval of an EMD / PBG request');
+    }
+
+    const toStatus = def.to ?? inst.status;
+    const patch: Record<string, any> = { status: toStatus };
+    const take = (f: InstrumentField) => {
+      const v = input[f];
+      if (v === undefined || v === null || String(v).trim() === '') return;
+      if (f !== 'reason') patch[f] = f === 'amount' ? Number(v) : String(v).trim();
+    };
+    def.fields.forEach(take);
+    if (['reject', 'cancel', 'forfeit', 'mark_expired'].includes(def.action)) patch.closure_reason = dto.reason?.trim() || null;
+    if (def.action === 'approve') Object.assign(patch, { approved_by: user.id, approved_at: new Date() });
+    if (def.action === 'issue') Object.assign(patch, { issued_by: user.id, issued_at: new Date() });
+    if (def.action === 'submit') patch.submitted_at = new Date();
+    if (def.action === 'mark_refund_due') patch.refund_due_on = today;
+    if (def.action === 'extend') patch.extension_count = (inst.extension_count || 0) + 1;
+    const changes = this.instrumentChanges(inst, patch);
+    delete changes.status;
+
+    const updated = await this.db.transaction().execute(async (trx) => {
+      const row = await trx
+        .updateTable('tender_financial_instruments')
+        .set({ ...patch, updated_at: new Date() })
+        .where('id', '=', instrumentId)
+        .where('status', '=', inst.status)
+        .returningAll()
+        .executeTakeFirst();
+      if (!row) throw new ConflictException(`This ${inst.instrument_type} moved on in the meantime — refresh and try again.`);
+      await this.writeInstrumentHistory(trx, {
+        instrument_id: instrumentId,
+        tender_id: tenderId,
+        action: def.action,
+        from_status: inst.status,
+        to_status: toStatus,
+        note: dto.reason || null,
+        changes,
+        changed_by: user.id,
+      });
+      await this.queueInstrumentEvent(trx, tender, row, { action: def.action, fromStatus: inst.status, toStatus, note: dto.reason, actorId: user.id });
+
+      // Won bid: the EMD comes back once the performance security is in.
+      if (def.action === 'submit' && PERFORMANCE_INSTRUMENT_TYPES.includes(inst.instrument_type) && String(tender.status).toLowerCase() === 'won') {
+        await this.autoMoveInstruments(trx, tender, {
+          types: ['EMD'],
+          from: ['Issued', 'Submitted'],
+          to: 'Refund Due',
+          action: 'auto_refund_due',
+          note: `${inst.instrument_type} submitted on the won bid`,
+          dueDay: today,
+        });
+      }
+      return row;
+    });
+    this.outboxService.triggerImmediate();
+
+    await this.logActivity(
+      tenderId,
+      'FINANCIAL_INSTRUMENT_UPDATED',
+      `${inst.instrument_type} ${def.done.toLowerCase()}${toStatus !== inst.status ? ` (${inst.status} → ${toStatus})` : ''}`,
+      user.id,
+      { instrument_id: instrumentId, action: def.action, from: inst.status, to: toStatus },
+    );
+    this.audit(
+      user.id,
+      tenderId,
+      'financial_instrument_transition',
+      { instrument_type: inst.instrument_type, status: inst.status },
+      { instrument_type: inst.instrument_type, status: toStatus, action: def.action, ...Object.fromEntries(Object.entries(changes).map(([k, v]) => [k, v.to])) },
+    );
+    return updated;
+  }
+
+  /**
+   * System moves: instruments of `types` in `from` go to `to`, each with a trail row (changed_by null) and an event.
+   * Used when the tender itself moves (TENDER_STAGE_EFFECTS) and when a PBG is submitted on a won bid.
+   */
+  private async autoMoveInstruments(
+    trx: Kysely<Database>,
+    tender: { id: string; tender_number?: string | null; tender_no?: string | null; tender_owner_id?: string | null; owner?: string | null; assigned_to?: string | null },
+    move: { types?: readonly string[]; from: readonly string[]; to: TenderFinancialInstrumentStatus; action: string; note: string; dueDay: string },
+  ) {
+    let q = trx
+      .selectFrom('tender_financial_instruments')
+      .selectAll()
+      .where('tender_id', '=', tender.id)
+      .where('status', 'in', move.from as string[]);
+    if (move.types) q = q.where('instrument_type', 'in', move.types as string[]);
+    const rows = await q.execute();
+    for (const inst of rows) {
+      // A spent tender fee never falls due for refund.
+      if (move.to === 'Refund Due' && !REFUNDABLE_INSTRUMENT_TYPES.includes(inst.instrument_type)) continue;
+      const patch: Record<string, any> = { status: move.to, updated_at: new Date() };
+      if (move.to === 'Refund Due') patch.refund_due_on = move.dueDay;
+      if (move.to === 'Submitted') patch.submitted_at = new Date();
+      if (move.to === 'Cancelled') patch.closure_reason = move.note;
+      await trx.updateTable('tender_financial_instruments').set(patch).where('id', '=', inst.id).execute();
+      await this.writeInstrumentHistory(trx, {
+        instrument_id: inst.id,
+        tender_id: tender.id,
+        action: move.action,
+        from_status: inst.status,
+        to_status: move.to,
+        note: move.note,
+        changed_by: null,
+      });
+      await this.queueInstrumentEvent(trx, tender, inst, { action: move.action, fromStatus: inst.status, toStatus: move.to, note: move.note, actorId: null });
+    }
+    return rows.length;
+  }
+
+  /** What a tender stage change does to its instruments (submitted with the bid, refund due, unpaid cancelled). */
+  private async syncInstrumentsForStage(trx: Kysely<Database>, tender: any, to: StandardTenderStatus, dueDay: string) {
+    const effect = TENDER_STAGE_EFFECTS[to];
+    if (!effect) return;
+    if (effect.submitIssued) {
+      await this.autoMoveInstruments(trx, tender, { types: ['EMD', 'Tender Fee'], from: ['Issued'], to: 'Submitted', action: 'auto_submit', note: effect.note, dueDay });
+    }
+    if (effect.refundDue) {
+      await this.autoMoveInstruments(trx, tender, { from: ['Issued', 'Submitted'], types: ['EMD'], to: 'Refund Due', action: 'auto_refund_due', note: effect.note, dueDay });
+    }
+    if (effect.cancelUnpaid) {
+      await this.autoMoveInstruments(trx, tender, { from: INSTRUMENT_UNPAID_STATUSES, to: 'Cancelled', action: 'auto_cancel', note: `${effect.note} before it was paid`, dueDay });
+    }
+  }
+
+  /** The instrument's lifecycle trail, oldest first. */
+  async getFinancialInstrumentHistory(tenderId: string, instrumentId: string, user: AuthUser): Promise<InstrumentHistoryEntry[]> {
+    const tender = await this.findOne(tenderId, user);
+    await this.assertTenderVisible(user, tender);
+    const rows = await this.db
+      .selectFrom('tender_financial_instrument_history as h')
+      .leftJoin('users as u', 'u.id', 'h.changed_by')
+      .select(['h.id', 'h.action', 'h.from_status', 'h.to_status', 'h.note', 'h.changes', 'h.changed_by', 'h.changed_at', 'u.full_name as changed_by_name'])
+      .where('h.instrument_id', '=', instrumentId)
+      .where('h.tender_id', '=', tenderId)
+      .orderBy('h.changed_at', 'asc')
+      .orderBy('h.id', 'asc')
+      .execute();
+    return rows.map((r) => ({
+      ...r,
+      changes: (typeof r.changes === 'string' ? JSON.parse(r.changes) : r.changes) || {},
+      changed_at: new Date(r.changed_at as any).toISOString(),
+    }));
+  }
+
+  /**
+   * Finance, EMD & PBG desk: one page of the instruments in the picked view (`filter`: action | expiring | refund_due |
+   * blocked | pbg | all, default all), most urgent first. The KPI totals (EMD blocked, refunds due, refunds pending
+   * > 30 days, active PBGs, waiting on someone, expiring) and each view's count are aggregated in SQL over every EMD /
+   * PBG / security deposit in scope, so they never depend on the page loaded.
    */
   async getFinanceEmdTracking(user: AuthUser, query: TenderEmdTrackingQueryDto = {}) {
     const { page, limit, offset } = getPaginationParams({
@@ -5132,22 +5522,31 @@ export class TendersService {
     const base = this.db
       .selectFrom('tender_financial_instruments')
       .leftJoin('tenders', 'tender_financial_instruments.tender_id', 'tenders.id')
-      .where('tender_financial_instruments.instrument_type', 'in', ['EMD', 'PBG'])
+      .where('tender_financial_instruments.instrument_type', 'in', ['EMD', 'PBG', 'Security Deposit'])
       .where((eb) => eb.or([eb('tenders.is_deleted', '=', false), eb('tenders.is_deleted', 'is', null)]))
       // A regional manager tracks the EMDs of the bids their tender list shows; finance / tender team are All-India.
       .$if(user.role === 'regional_manager', (qb) => qb.where(rmTenderScope(user)));
 
+    const live = sql<boolean>`tender_financial_instruments.status in ('Issued', 'Submitted', 'Refund Due')`;
     const views = {
+      action: sql<boolean>`tender_financial_instruments.status in ('Requested', 'Approved')`,
+      expiring: sql<boolean>`${live} and tender_financial_instruments.expiry_date is not null and tender_financial_instruments.expiry_date <= ${today}::date + 30`,
       refund_due: sql<boolean>`tender_financial_instruments.instrument_type = 'EMD' and tender_financial_instruments.status = 'Refund Due'`,
       blocked: sql<boolean>`tender_financial_instruments.instrument_type = 'EMD' and tender_financial_instruments.status in ('Issued', 'Submitted')`,
-      pbg: sql<boolean>`tender_financial_instruments.instrument_type = 'PBG'`,
+      pbg: sql<boolean>`tender_financial_instruments.instrument_type in ('PBG', 'Security Deposit')`,
       all: sql<boolean>`true`,
     };
-    // Refund aging clock, as `days_pending` below: from the declared result, else from when the EMD was logged (IST day).
-    const dueSince = sql`coalesce(tenders.result_date, (tender_financial_instruments.created_at at time zone 'Asia/Kolkata')::date)`;
+    // Refund ageing runs from the day the money fell due back (result day / PBG submission), else when it was logged.
+    const dueSince = sql`coalesce(tender_financial_instruments.refund_due_on, tenders.result_date, (tender_financial_instruments.created_at at time zone 'Asia/Kolkata')::date)`;
     const countWhere = (cond: RawBuilder<boolean>) => sql<number>`count(case when ${cond} then 1 end)::int`;
     const sumWhere = (cond: RawBuilder<boolean>) =>
       sql<number>`coalesce(sum(case when ${cond} then tender_financial_instruments.amount end), 0)::float8`;
+    // Most urgent first: waiting on someone, then expiring soonest, then oldest refund.
+    const urgency = sql<number>`case
+      when tender_financial_instruments.status in ('Requested', 'Approved') then 0
+      when ${views.expiring} then 1
+      when tender_financial_instruments.status = 'Refund Due' then 2
+      when ${live} then 3 else 4 end`;
 
     const [totals, rows] = await Promise.all([
       base
@@ -5156,9 +5555,10 @@ export class TendersService {
           sumWhere(views.refund_due).as('total_refund_due'),
           countWhere(views.refund_due).as('refund_due'),
           countWhere(sql<boolean>`${views.refund_due} and ${dueSince} < ${today}::date - 30`).as('refund_aging_over_30'),
-          countWhere(sql<boolean>`tender_financial_instruments.instrument_type = 'PBG' and coalesce(tender_financial_instruments.status, '') <> 'Released'`).as(
-            'active_pbg',
-          ),
+          countWhere(sql<boolean>`${views.pbg} and tender_financial_instruments.status in ('Issued', 'Submitted', 'Refund Due')`).as('active_pbg'),
+          sumWhere(sql<boolean>`${views.pbg} and tender_financial_instruments.status in ('Issued', 'Submitted', 'Refund Due')`).as('total_pbg_held'),
+          countWhere(views.action).as('action'),
+          countWhere(views.expiring).as('expiring'),
           countWhere(views.blocked).as('blocked'),
           countWhere(views.pbg).as('pbg'),
           sql<number>`count(tender_financial_instruments.id)::int`.as('all'),
@@ -5166,28 +5566,24 @@ export class TendersService {
         .executeTakeFirst(),
       base
         .leftJoin('organisations', 'tenders.organisation_id', 'organisations.id')
+        .leftJoin('users as rq', 'rq.id', 'tender_financial_instruments.requested_by')
+        .leftJoin('users as fo', 'fo.id', 'tender_financial_instruments.finance_owner_id')
+        .selectAll('tender_financial_instruments')
         .select([
-          'tender_financial_instruments.id',
-          'tender_financial_instruments.tender_id',
-          'tender_financial_instruments.instrument_type',
-          'tender_financial_instruments.amount',
-          'tender_financial_instruments.mode',
-          'tender_financial_instruments.status',
-          'tender_financial_instruments.reference_number',
-          'tender_financial_instruments.bank',
-          'tender_financial_instruments.issue_date',
-          'tender_financial_instruments.expiry_date',
-          'tender_financial_instruments.remarks',
-          'tender_financial_instruments.created_at',
-          'tender_financial_instruments.updated_at',
           'tenders.tender_number',
           'tenders.tender_no',
           'tenders.status as tender_status',
           'tenders.submission_deadline',
           'tenders.result_date',
           'organisations.name as organisation_name',
+          'rq.full_name as requested_by_name',
+          'fo.full_name as finance_owner_name',
+          sql<string>`${dueSince}::text`.as('due_since'),
+          sql<number | null>`(tender_financial_instruments.expiry_date - ${today}::date)::int`.as('days_to_expiry'),
         ])
         .where(views[filter])
+        .orderBy(urgency)
+        .orderBy(sql`tender_financial_instruments.expiry_date asc nulls last`)
         .orderBy('tender_financial_instruments.created_at', 'desc')
         .orderBy('tender_financial_instruments.id', 'desc')
         .limit(limit)
@@ -5196,19 +5592,15 @@ export class TendersService {
     ]);
 
     const data = rows.map((i) => {
-      if (i.instrument_type !== 'EMD' || i.status !== 'Refund Due') return i;
-      // An EMD falls due for refund when the result is declared (a lost bid moves it to Refund Due); one with no
-      // recorded result counts from when it was logged. Editing the instrument later never restarts the clock.
-      const dueSinceDay = calendarDay(i.result_date as any) || istDateOf(i.created_at);
-      const daysPending = Math.max(0, isoDaysBetween(dueSinceDay, todayInKolkata()));
-      return {
-        ...i,
-        days_pending: daysPending,
-        aging_bucket: daysPending > 30 ? '> 30 days' : '< 30 days',
-      };
+      const { due_since, ...row } = i as typeof i & { due_since: string };
+      if (row.status !== 'Refund Due') return row;
+      const daysPending = Math.max(0, isoDaysBetween(String(due_since).slice(0, 10), today));
+      return { ...row, days_pending: daysPending, aging_bucket: daysPending > 30 ? '> 30 days' : '< 30 days' };
     });
 
     const counts = {
+      action: totals?.action || 0,
+      expiring: totals?.expiring || 0,
       refund_due: totals?.refund_due || 0,
       blocked: totals?.blocked || 0,
       pbg: totals?.pbg || 0,
@@ -5220,9 +5612,12 @@ export class TendersService {
       filter,
       total_emd_blocked: totals?.total_emd_blocked || 0,
       total_refund_due: totals?.total_refund_due || 0,
+      total_pbg_held: totals?.total_pbg_held || 0,
       refund_due_count: counts.refund_due,
       refund_aging_over_30_count: totals?.refund_aging_over_30 || 0,
       active_pbg_count: totals?.active_pbg || 0,
+      action_count: counts.action,
+      expiring_count: counts.expiring,
       counts,
     };
   }

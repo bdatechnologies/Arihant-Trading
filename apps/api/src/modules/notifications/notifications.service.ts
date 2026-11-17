@@ -9,10 +9,17 @@ import { PEER_NOTIFICATION_TYPES } from './notifications.dto.js';
 const CATEGORY_KEYWORDS: [string, string[]][] = [
   ['tender', ['tender']],
   ['proposal', ['proposal']],
-  ['lead', ['lead']],
+  // Lead follow-up reminders (followup_assigned / _due / _overdue) belong with lead activity; proposal follow-ups
+  // already matched 'proposal' above.
+  ['lead', ['lead', 'followup_']],
   ['task', ['task', 'blocker']],
   ['expense', ['expense']],
   ['delivery', ['delivery']],
+  // Blueprint notifications for demos, service and field visits used to fall into "System". Demo first (a demo's
+  // service escort is a demo alert), then service (a service engineer's visit is a service alert), then visits / trips.
+  ['demo', ['demo']],
+  ['service', ['service']],
+  ['visit', ['visit', 'trip']],
 ];
 
 /** SQL CASE giving a notification's category from its type (first keyword wins, else 'system'). */
@@ -40,7 +47,8 @@ export class NotificationsService {
     const limit = Math.max(1, Math.min(100, Number(query?.limit) || 50));
     const offset = (page - 1) * limit;
     const status = query?.unreadOnly ? 'unread' : query?.status === 'unread' || query?.status === 'read' ? query.status : 'all';
-    const category = query?.category && CATEGORY_KEYWORDS.some(([c]) => c === query.category) ? query.category : null;
+    // 'system' is a real category too (whatever no keyword matches) — dropping it as unknown listed every notification.
+    const category = query?.category && (query.category === 'system' || CATEGORY_KEYWORDS.some(([c]) => c === query.category)) ? query.category : null;
     const search = (query?.search || '').trim().toLowerCase().slice(0, 100);
 
     let baseQuery = this.db.selectFrom('notifications').where('user_id', '=', userId);

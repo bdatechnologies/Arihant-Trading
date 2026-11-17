@@ -23,6 +23,7 @@ import {
   TenderQueryDto,
   TenderPageQueryDto,
   TenderEmdTrackingQueryDto,
+  TransitionTenderFinancialInstrumentDto,
   TenderCalendarQueryDto,
   TransitionTenderDto,
   HoldTenderDto,
@@ -759,6 +760,25 @@ export class TendersController {
     return this.tendersService.addFinancialInstrument(id, dto, user);
   }
 
+  /** One EMD / PBG workflow step; the shared machine (emd-workflow.ts) checks the role, the status and the facts. */
+  @Post(':id/financial-instruments/:instrumentId/transition')
+  @Roles('management', 'tender_team', 'accounts', 'admin')
+  async transitionFinancialInstrument(
+    @Param('id') id: string,
+    @Param('instrumentId') instrumentId: string,
+    @Body() dto: TransitionTenderFinancialInstrumentDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.tendersService.transitionFinancialInstrument(id, instrumentId, dto, user);
+  }
+
+  @Get(':id/financial-instruments/:instrumentId/history')
+  @Roles('management', 'regional_manager', 'sales', 'tender_team', 'accounts', 'admin')
+  async getFinancialInstrumentHistory(@Param('id') id: string, @Param('instrumentId') instrumentId: string, @CurrentUser() user: AuthUser) {
+    return this.tendersService.getFinancialInstrumentHistory(id, instrumentId, user);
+  }
+
+  /** Corrects an instrument's details (bank, number, beneficiary, owner, remarks); the status moves via /transition. */
   @Patch(':id/financial-instruments/:instrumentId')
   @Roles('management', 'accounts', 'admin')
   async updateFinancialInstrument(

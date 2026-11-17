@@ -202,7 +202,14 @@ export class PerformanceEvidenceService {
         ])
         .where('pr.employee_id', '=', q.employee_id)
         .where('pr.status', 'in', ['submitted', 'acknowledged'])
-        .where('pr.superseded_by_id', 'is', null)
+        // A locked review stays the record until its new version is submitted — a revision still in draft
+        // (or abandoned) must not make the review vanish from the evidence.
+        .where((eb) =>
+          eb.or([
+            eb('pr.superseded_by_id', 'is', null),
+            eb.exists(eb.selectFrom('performance_reviews as nv').select('nv.id').whereRef('nv.id', '=', 'pr.superseded_by_id').where('nv.status', '=', 'draft')),
+          ]),
+        )
         .where('pr.period_from', '<=', to)
         .where('pr.period_to', '>=', q.from)
         .orderBy('pr.period_from')
@@ -399,8 +406,9 @@ export class PerformanceEvidenceService {
     pdf.heading('Appendix A - Task list');
     pdf.table(
       [
-        { label: 'Task', width: 15 },
-        { label: 'Title', width: 22 },
+        // Widths are relative to the row total: 17 of 112 gives the task number the same ~77pt as Appendix B, so it never truncates.
+        { label: 'Task', width: 17 },
+        { label: 'Title', width: 20 },
         { label: 'Orig. deadline', width: 11 },
         { label: 'Completed', width: 11 },
         { label: 'Status', width: 11 },
@@ -448,8 +456,8 @@ export class PerformanceEvidenceService {
       pdf.heading('Appendix C - Reassigned away');
       pdf.table(
         [
-          { label: 'Task', width: 15 },
-          { label: 'Title', width: 27 },
+          { label: 'Task', width: 17 },
+          { label: 'Title', width: 25 },
           { label: 'To', width: 16 },
           { label: 'Reason type', width: 16 },
           { label: 'Overdue then', width: 10 },

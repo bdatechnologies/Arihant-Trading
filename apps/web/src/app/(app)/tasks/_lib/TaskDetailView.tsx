@@ -677,8 +677,8 @@ export const TaskDetailView: React.FC<{ taskId: string; variant?: 'page' | 'popu
       {ob && (
         <InfoCallout variant={ob.status === 'accepted' ? 'info' : 'warning'} title={`${blockerTypeLabel(ob.blocker_type)} — ${TASK_BLOCKER_STATUS_LABELS[ob.status]}`}>
           <div className="space-y-1 text-sm">
-            <p>“{ob.description}”</p>
-            <p className="text-xs text-[#4A5568]">
+            <p className="whitespace-pre-wrap break-words">“{ob.description}”</p>
+            <p className="text-xs text-[#4A5568] break-words">
               Raised by {ob.raised_by_name || '—'} · {formatTaskDateTime(ob.created_at)}
               {ob.dependency_user_name ? ` · waiting on ${ob.dependency_user_name}` : ''}
               {ob.dependency_customer_name ? ` · customer ${ob.dependency_customer_name}` : ''}

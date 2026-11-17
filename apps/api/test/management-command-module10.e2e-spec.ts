@@ -80,7 +80,7 @@ describe('Module 10 — Management Command dashboard', () => {
     await q(`delete from role_module_blocks`);
     await q(`delete from dashboard_layouts where user_id in ('${uid.mgmt}', '${uid.admin}')`);
     const del = async (table: string) => ids[table]?.length && (await q(`delete from ${table} where id in (${ids[table].map((i) => `'${i}'`).join(',')})`));
-    for (const t of ['demo_reservations', 'demo_equipment', 'demos', 'visits', 'follow_ups', 'leads', 'organisations']) await del(t);
+    for (const t of ['demo_reservations', 'demo_equipment', 'demos', 'visits', 'tenders', 'follow_ups', 'leads', 'organisations']) await del(t);
     await app.close();
   });
 
@@ -100,7 +100,8 @@ describe('Module 10 — Management Command dashboard', () => {
     expect(body.unavailable).toEqual([]);
     const keys = Object.fromEntries(body.sections.map((x: any) => [x.key, x.metrics.map((m: any) => m.key)]));
     expect(keys.sales).toEqual(['followups_overdue', 'new_opportunities', 'conversion', 'region_performance']);
-    expect(keys.tenders).toEqual(['deadlines', 'approvals', 'pq_pipeline', 'general_pipeline', 'won_lost']);
+    expect(keys.visits).toEqual(['missed', 'upcoming', 'travelling', 'cancelled_rescheduled', 'combine']);
+    expect(keys.tenders).toEqual(['deadlines', 'missed_deadlines', 'approvals', 'pq_pipeline', 'general_pipeline', 'won_lost']);
     expect(keys.service).toEqual(['open', 'overdue', 'repeat', 'awaiting_parts']);
   });
 
@@ -124,6 +125,10 @@ describe('Module 10 — Management Command dashboard', () => {
     });
 
     it('field visits: the Visits register, its open statuses and dates', async () => {
+      const missed = fig(body, 'visits', 'missed');
+      expect(missed.href).toBe('/visits?status=overdue');
+      expect(missed.value).toBe(await total('visits', { status: 'overdue' }));
+
       const week = fig(body, 'visits', 'upcoming');
       expect(week.value).toBe(await total('visits', { status: 'open', dateFrom: today, dateTo: addIsoDays(today, 6) }));
 
@@ -154,6 +159,9 @@ describe('Module 10 — Management Command dashboard', () => {
 
     it('tenders: the register’s deadline, approval, stage and category filters', async () => {
       expect(fig(body, 'tenders', 'deadlines').value).toBe(await total('tenders', { deadline: 'upcoming_7d' }));
+      const missed = fig(body, 'tenders', 'missed_deadlines');
+      expect(missed.href).toBe('/tenders?deadline=overdue');
+      expect(missed.value).toBe(await total('tenders', { deadline: 'overdue' }));
       expect(fig(body, 'tenders', 'approvals').value).toBe(await total('tenders', { status: 'awaiting_approval' }));
       for (const [key, category] of [['pq_pipeline', 'pq'], ['general_pipeline', 'general_mha']]) {
         const m = fig(body, 'tenders', key);
@@ -252,6 +260,59 @@ describe('Module 10 — Management Command dashboard', () => {
       const mine = (await q(`select 1 from visits v join organisations o on o.id = v.organisation_id where o.city = '${CITY}' and v.status = 'planned'`)).length;
       expect(mine).toBe(2);
       if (m.items.length < 5) expect(m.items.map((i: any) => i.title)).toContain(CITY);
+    });
+
+    /** Every record behind one figure, walking its pages. */
+    const records = async (section: string, metric: string) => {
+      const out: any[] = [];
+      for (let offset: number | null = 0; offset !== null; ) {
+        const r = await api().get('/api/dashboard/command/records').query({ section, metric, offset, limit: 50 }).set(auth('mgmt'));
+        expect(r.status).toBe(200);
+        out.push(...r.body.items);
+        offset = r.body.next;
+      }
+      return out;
+    };
+
+    it('a visit whose day passed without a report (not a done, cancelled or coming one)', async () => {
+      const before = fig(await command(), 'visits', 'missed').value;
+      const visit = (day: string, status: string) => ins('visits', { organisation_id: s(org), assigned_to: s(uid.sales), planned_date: s(day), status: s(status) });
+      const missed = await visit(addIsoDays(today, -9), 'planned');
+      await visit(addIsoDays(today, -9), 'completed');
+      await visit(addIsoDays(today, -9), 'cancelled');
+      await visit(today, 'planned'); // today's visit can still be made
+      const m = fig(await command(), 'visits', 'missed');
+      expect(m.value).toBe(before + 1);
+      expect(m.tone).toBe('critical'); // over a week without a report
+      expect(await total('visits', { status: 'overdue' })).toBe(m.value);
+      const rows = await records('visits', 'missed');
+      expect(rows).toHaveLength(m.value);
+      expect(rows.find((r: any) => r.id === missed)).toMatchObject({ status: 'Report overdue', tone: 'critical' });
+    });
+
+    it('a bid that missed its submission deadline (not one submitted in time or still open)', async () => {
+      const before = fig(await command(), 'tenders', 'missed_deadlines').value;
+      // A tender cannot be created with a past deadline (DB guard), so it is created ahead and its clock moved back.
+      const bid = async (no: string, status: string, deadline: string) => {
+        const id = await ins('tenders', { tender_no: s(`${STAMP}-${no}`), organisation_id: s(org), category: s('general_mha'), status: s(status), submission_deadline: `now() + interval '30 days'` });
+        await db.connection().execute(async (c: any) => {
+          await sql`set session_replication_role = replica`.execute(c);
+          await sql.raw(`update tenders set submission_deadline = ${deadline} where id = '${id}'`).execute(c);
+          await sql`set session_replication_role = default`.execute(c);
+        });
+        return id;
+      };
+      const missed = await bid('MISSED', 'under_preparation', `now() - interval '2 days'`);
+      await bid('SENT', 'submitted', `now() - interval '2 days'`);
+      await bid('OPEN', 'under_preparation', `now() + interval '10 days'`);
+      const m = fig(await command(), 'tenders', 'missed_deadlines');
+      expect(m.value).toBe(before + 1);
+      expect(m.tone).toBe('critical'); // missed within the last week
+      expect(m.detail).toMatch(/missed in the last 7 days/);
+      expect(await total('tenders', { deadline: 'overdue' })).toBe(m.value);
+      const rows = await records('tenders', 'missed_deadlines');
+      expect(rows).toHaveLength(m.value);
+      expect(rows.find((r: any) => r.id === missed)).toMatchObject({ title: `${STAMP}-MISSED`, tone: 'critical' });
     });
 
     it('the same demo unit booked twice for overlapping days is a critical conflict', async () => {

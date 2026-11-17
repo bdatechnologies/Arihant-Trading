@@ -373,6 +373,24 @@ describe('Module 5: Proposal Management 68 Edge Cases Test Suite (E1 - E68)', ()
       expect(res.body.reference).toBeNull();
     });
 
+    it('E10b: a lone "<" or ">" in text is kept — "discount <5%" must not lose everything after the "<"', async () => {
+      const remarks = 'Discount <5% approved by director for qty 40; delivery >30 days';
+      const res = await request(app.getHttpServer())
+        .post('/api/proposals')
+        .set('Authorization', `Bearer ${mgmtToken}`)
+        .send({
+          customer_id: testOrgId,
+          product_id: testProductId,
+          sector: 'Defence',
+          request_date: day('2026-09-25'),
+          required_date: day('2026-10-10'),
+          remarks: `${remarks} <b>bold</b>`,
+          duplicate_override_reason: 'E10b angle bracket text test',
+        });
+      expect(res.status).toBe(201);
+      expect(res.body.remarks).toBe(`${remarks} bold`);
+    });
+
     it('E11: Multiple email references allowed; warning if reference used elsewhere but not blocked', async () => {
       const res = await request(app.getHttpServer())
         .post('/api/proposals')

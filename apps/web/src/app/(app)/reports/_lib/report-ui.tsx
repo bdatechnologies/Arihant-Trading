@@ -6,7 +6,7 @@
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import { BarChart3, ClipboardList, Gauge, Receipt, TableProperties, Wrench } from 'lucide-react';
+import { BarChart3, ClipboardList, FileSpreadsheet, Gauge, Receipt, TableProperties, Wrench } from 'lucide-react';
 import { canViewReport, formatIndianCurrency, type ReportKey, type ReportRate, type ReportTerritoryFilters } from '@arihant/shared';
 import { api } from '@/lib/api';
 import { addIsoDays, istToday } from '@/lib/ist-date';
@@ -21,6 +21,7 @@ export const REPORT_TABS: { key: ReportKey | 'registers'; href: string; label: s
   { key: 'service', href: '/reports/service', label: 'Service', icon: <Wrench className="h-3.5 w-3.5" /> },
   { key: 'expenses', href: '/reports/expenses', label: 'Expenses', icon: <Receipt className="h-3.5 w-3.5" /> },
   { key: 'productivity', href: '/reports/productivity', label: 'Productivity', icon: <Gauge className="h-3.5 w-3.5" /> },
+  { key: 'sheets', href: '/reports/dashboards', label: 'Dashboards', icon: <FileSpreadsheet className="h-3.5 w-3.5" /> },
   { key: 'registers', href: '/reports/registers', label: 'Registers', icon: <TableProperties className="h-3.5 w-3.5" /> },
 ];
 
@@ -37,7 +38,6 @@ export const ReportsNav: React.FC<{ role: string | undefined }> = ({ role }) => 
     <div className="-mx-1 overflow-x-auto px-1 custom-scrollbar">
       <Tabs
         variant="underline"
-        className="min-w-max"
         activeTab={active}
         onChange={(id) => {
           const t = tabs.find((x) => x.key === id);

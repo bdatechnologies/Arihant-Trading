@@ -26,6 +26,7 @@ import {
   SERVICE_DONE,
   TENDER_LIVE_STAGES,
   TENDER_LIVE_STATUSES,
+  TENDER_MISSED,
   VISIT_IS_OPEN,
   day,
   demoClash,
@@ -40,6 +41,7 @@ import {
   shortDay,
   tenderInCategory,
   visitClusters,
+  visitNotReported,
 } from './dashboard-command.service.js';
 import { DashboardPerformanceService } from './dashboard-performance.service.js';
 import { ProductivityReportService } from '../reports/productivity-report.service.js';
@@ -187,6 +189,14 @@ export class DashboardCommandRecordsService {
 
     /* ---------------------------------------------------------------- visits -- */
     visits: {
+      missed: {
+        dates: 'due',
+        list: (c, p) =>
+          this.visitList(p, visitNotReported(c.today), sql`v.planned_date asc, v.start_time asc nulls last, v.id`, (r) => ({
+            status: 'Report overdue',
+            tone: r.day < addIsoDays(c.today, -7) ? 'critical' : 'warning',
+          })),
+      },
       upcoming: {
         dates: 'due',
         list: (c, p) => this.visitList(p, sql`${VISIT_IS_OPEN} and v.planned_date between ${c.today}::date and ${addIsoDays(c.today, 6)}::date`, sql`v.planned_date asc, v.start_time asc nulls last, v.id`),
@@ -328,6 +338,10 @@ export class DashboardCommandRecordsService {
             status: human(r.status),
             tone: new Date(r.deadline).getTime() - Date.now() <= 48 * 3600e3 ? 'critical' : 'warning',
           })),
+      },
+      missed_deadlines: {
+        dates: 'deadline',
+        list: (c, p) => this.tenderList(p, TENDER_MISSED, sql`t.submission_deadline desc, t.id`, (r) => ({ status: `${human(r.status)} · deadline passed`, tone: 'critical' })),
       },
       approvals: {
         dates: 'deadline',
@@ -534,7 +548,7 @@ export class DashboardCommandRecordsService {
     );
   }
 
-  private visitList(p: Page, where: Cond, order: Cond) {
+  private visitList(p: Page, where: Cond, order: Cond, look: (r: Row) => Partial<CommandListItem> = () => ({})) {
     return this.page(
       p,
       sql`from visits v join organisations o on o.id = v.organisation_id left join users u on u.id = v.assigned_to where ${where}`,
@@ -548,6 +562,7 @@ export class DashboardCommandRecordsService {
         status: human(r.status),
         tone: r.status === 'cancelled' ? 'warning' : 'neutral',
         href: href('/visits', { customer: r.organisation_id }),
+        ...look(r),
       }),
     );
   }

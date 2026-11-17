@@ -3,7 +3,7 @@
  * updates, repeated delays, incomplete work (rework/reopen), approved blockers and unapproved delays — for
  * a scope (my team / department / all) and period. Each count maps to a task-list filter for drill-down.
  */
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { sql } from 'kysely';
 import {
   addIsoDays,
@@ -14,7 +14,7 @@ import {
   type AuthUser,
 } from '@arihant/shared';
 import { TaskStore } from './task-store.service.js';
-import { UUID_RE } from './task-common.js';
+import { TaskValidationException, UUID_RE } from './task-common.js';
 import { blockerSummary, classify, type ClassifiedTask, type MetricBlocker, type MetricTask } from './task-metrics.js';
 
 const istStart = (d: string) => new Date(`${d}T00:00:00+05:30`);
@@ -40,6 +40,7 @@ export class TaskAccountabilityService {
       const dept = deptId ?? heads[0]?.id ?? null;
       if (!dept) throw new ForbiddenException('Choose a department you head.');
       if (!all && !heads.some((h) => h.id === dept)) throw new ForbiddenException('You can only view departments you head.');
+      if (!(await this.db.selectFrom('departments').select('id').where('id', '=', dept).executeTakeFirst())) throw new NotFoundException('Department not found');
       ids = (await this.db.selectFrom('users').select('id').where('department_id', '=', dept).execute()).map((r) => r.id);
     } else {
       ids = await this.store.access.teamIds(user, s);
@@ -52,6 +53,7 @@ export class TaskAccountabilityService {
     const today = todayInKolkata();
     const from = isIsoDateString(query.from) ? (query.from as string) : `${today.slice(0, 7)}-01`;
     const to = isIsoDateString(query.to) ? (query.to as string) : today;
+    if (from > to) throw new TaskValidationException({ to: '"To" must be on or after "From".' });
     const fromTs = istStart(from);
     const toTs = istEndOfDay(to);
     const windowStart = new Date(Date.now() - s.repeated_delay_window_days * 86400000);
@@ -123,6 +125,12 @@ export class TaskAccountabilityService {
       const excessive = empTasks.filter((t) => t.status !== 'cancelled' && t.extension_count > s.max_extensions_before_flag);
       const b = blockerSummary(empBlockers);
       const lateUnexcused = period.filter((t) => t.delay_class === 'late_unexcused').length;
+      // One task is one unapproved delay: late without excuse, still open and overdue, or its blocker rejected —
+      // a late task whose blocker was also rejected must not count twice.
+      const unapproved = new Set([
+        ...period.filter((t) => t.delay_class === 'late_unexcused' || t.delay_class === 'open_overdue').map((t) => t.id),
+        ...empBlockers.filter((x) => x.status === 'rejected').map((x) => x.task_id),
+      ]);
       const done = period.filter((t) => ['on_time', 'late_excused', 'late_unexcused'].includes(t.delay_class || ''));
       return {
         due_today: open.filter((t) => t.deadline && new Date(t.deadline) >= istStart(today) && new Date(t.deadline) <= istEndOfDay(today)).length,
@@ -136,7 +144,7 @@ export class TaskAccountabilityService {
         approved_blockers: b.accepted,
         approved_blockers_by_type: b.accepted_by_type,
         rejected_blockers: b.rejected,
-        unapproved_delays: lateUnexcused + period.filter((t) => t.delay_class === 'open_overdue').length + b.rejected,
+        unapproved_delays: unapproved.size,
         assigned: period.length,
         completed: done.length,
         on_time: period.filter((t) => t.delay_class === 'on_time').length,

@@ -378,7 +378,7 @@ function Reports() {
                   {rows.data.map((r: any) => (
                     <TableRow key={r.item_id}>
                       <TableCell className="whitespace-nowrap">
-                        <Link href={`/expenses/${r.claim_id}`} className="font-mono text-xs font-semibold text-[#0F5E63] hover:underline">{r.claim_number}</Link>
+                        <Link href={`/expenses/${r.claim_id}`} className="-my-1 inline-block py-1 font-mono text-xs font-semibold text-[#0F5E63] hover:underline">{r.claim_number}</Link>
                         <div className="text-[11px] text-[#4A5568]"><DateText value={r.expense_date} /></div>
                       </TableCell>
                       <TableCell className="text-sm max-w-[150px]">

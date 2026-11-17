@@ -278,6 +278,13 @@ describe('line-item validation', () => {
     expect(errorsOf(() => validateItem({ ...base, purpose: '<b></b>' }, ctx(cat())))).toHaveProperty(['purpose']);
   });
 
+  it('keeps a lone "<" or ">" in ordinary text; strips only real tags, even when nested', () => {
+    expect(sanitizeText('Completed <50% on time but >80% excused', 100)).toBe('Completed <50% on time but >80% excused');
+    expect(sanitizeText('Qty <5 units, price >10k', 100)).toBe('Qty <5 units, price >10k');
+    expect(sanitizeText('Discount > 8% (a < b)', 100)).toBe('Discount > 8% (a < b)');
+    expect(sanitizeText('<<b>b>Taxi<!-- x --> <img src=x onerror=alert(1)>fare</B>', 100)).toBe('Taxi fare');
+  });
+
   it('receipt thresholds: 0 = always, null = never', () => {
     expect(receiptRequired({ receipt_required_above: 0 }, 1)).toBe(true);
     expect(receiptRequired({ receipt_required_above: null }, 99999)).toBe(false);

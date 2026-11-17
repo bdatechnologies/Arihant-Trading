@@ -405,6 +405,11 @@ export class TaskBlockersService {
       'org.name as dependency_customer_name',
       sql<number>`(select count(*)::int from task_blockers x where x.task_id = b.task_id and x.blocker_type = b.blocker_type)`.as('same_type_count'),
       sql<number>`(select count(*)::int from task_blockers x where x.task_id = b.task_id)`.as('blocker_count'),
+      // The task's latest escalation still in play, so the line manager sees it has gone up and the person it went to sees who sent it and why.
+      sql<string | null>`(select u.full_name from task_escalations e join users u on u.id = e.escalated_to where e.task_id = b.task_id and e.status <> 'closed' order by e.created_at desc limit 1)`.as('escalated_to_name'),
+      sql<string | null>`(select e.escalated_to from task_escalations e where e.task_id = b.task_id and e.status <> 'closed' order by e.created_at desc limit 1)`.as('escalated_to'),
+      sql<string | null>`(select u.full_name from task_escalations e join users u on u.id = e.escalated_by where e.task_id = b.task_id and e.status <> 'closed' order by e.created_at desc limit 1)`.as('escalated_by_name'),
+      sql<string | null>`(select e.reason from task_escalations e where e.task_id = b.task_id and e.status <> 'closed' order by e.created_at desc limit 1)`.as('escalation_reason'),
     ] as const;
   }
 

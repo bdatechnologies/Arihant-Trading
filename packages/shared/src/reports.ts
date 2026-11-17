@@ -7,7 +7,7 @@
  */
 import type { UserRole } from './enums.js';
 
-export type ReportKey = 'pipeline' | 'service' | 'expenses' | 'productivity' | 'mis' | 'securities';
+export type ReportKey = 'pipeline' | 'service' | 'expenses' | 'productivity' | 'mis' | 'securities' | 'sheets';
 
 /**
  * Who may open each report (the API's @Roles guard and the web tabs both read this). Territory scoping is applied
@@ -21,6 +21,8 @@ export const REPORT_ROLES: Record<ReportKey, readonly UserRole[]> = {
   // Tender team processes EMDs, Accounts accounts for EMD / PBG, the regional manager tracks their zone's (RBAC spec §2).
   mis: ['management', 'admin', 'regional_manager', 'tender_team', 'accounts'],
   securities: ['management', 'admin', 'regional_manager', 'tender_team', 'accounts'],
+  // The workbook sheets; each sheet narrows further (SHEETS[].roles).
+  sheets: ['management', 'admin', 'regional_manager', 'tender_team', 'accounts'],
 };
 
 export function canViewReport(role: UserRole | string | null | undefined, report: ReportKey): boolean {
@@ -559,6 +561,440 @@ export interface SecurityRegisterDto {
   /** Held or refund due, expiring within 30 days (or already expired). */
   expiring: SecurityStateTotal;
   data: SecurityRegisterRow[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+  generated_at: string;
+}
+
+/* ------------------------------------------------------------------------------------------------------------------ */
+/* Report 7 — Dashboard sheets (the client's "ALL DASHBOARDS" workbook, one sheet per register / MIS table)             */
+/* ------------------------------------------------------------------------------------------------------------------ */
+
+export type SheetKey =
+  | 'tenders'
+  | 'emd'
+  | 'performance_security'
+  | 'demonstrations'
+  | 'orders'
+  | 'deliveries'
+  | 'service'
+  | 'zone_mis'
+  | 'person_mis'
+  | 'state_mis'
+  | 'product_mis'
+  | 'pipeline'
+  | 'quotations'
+  | 'expenses';
+
+export type SheetGroup = 'bids' | 'execution' | 'mis' | 'sales';
+
+export const SHEET_GROUP_LABELS: Record<SheetGroup, string> = {
+  bids: 'Bids & securities',
+  execution: 'Orders & execution',
+  mis: 'MIS',
+  sales: 'Sales & expenses',
+};
+
+/** money = ₹, percent = 0–100 one decimal, yesno = 'Yes' / 'No' / blank, status = a badge. */
+export type SheetCellKind = 'text' | 'date' | 'money' | 'number' | 'percent' | 'yesno' | 'status';
+
+export interface SheetColumn {
+  key: string;
+  /** The workbook's own column heading. */
+  label: string;
+  kind: SheetCellKind;
+}
+
+export interface SheetDef {
+  key: SheetKey;
+  /** The workbook's sheet heading. */
+  title: string;
+  group: SheetGroup;
+  /** Which date puts a row in the period; null = a register of every open item (no period). */
+  period_basis: string | null;
+  columns: SheetColumn[];
+  /** Workbook columns this sheet cannot fill because BOS does not hold that data (Tally, inventory …). */
+  not_tracked: string[];
+  roles: readonly UserRole[];
+}
+
+const col = (key: string, label: string, kind: SheetCellKind = 'text'): SheetColumn => ({ key, label, kind });
+const SHEET_ALL: UserRole[] = ['management', 'admin', 'regional_manager', 'tender_team', 'accounts'];
+const MIS_COLUMNS = (first: SheetColumn[]): SheetColumn[] => [
+  ...first,
+  col('tenders_total', 'Total Tenders', 'number'),
+  col('tenders_submitted', 'Tenders Submitted', 'number'),
+  col('tenders_under_evaluation', 'Tenders Under Evaluation', 'number'),
+  col('tenders_won', 'Tenders Won', 'number'),
+  col('tenders_lost', 'Tenders Lost', 'number'),
+  col('tenders_result_awaited', 'Tenders Result Awaited', 'number'),
+  col('win_rate', 'Win Rate %', 'percent'),
+  col('tender_value', 'Total Tender Value', 'money'),
+  col('orders', 'Total Orders', 'number'),
+  col('order_value', 'Total Order Value', 'money'),
+  col('pending_deliveries', 'Pending Deliveries', 'number'),
+  col('open_service_cases', 'Open Service Cases', 'number'),
+  col('closed_service_cases', 'Closed Service Cases', 'number'),
+  col('emd_blocked', 'EMD Blocked Amount', 'money'),
+  col('security_held', 'Performance Security Blocked', 'money'),
+];
+const MIS_NOT_TRACKED = ['Total Invoice Value', 'Payment Received', 'Outstanding Amount', 'Pending Delivery Value'];
+
+/** Every sheet, in workbook order. The API fills the columns; the web lays them out and exports them as-is. */
+export const SHEETS: readonly SheetDef[] = [
+  {
+    key: 'tenders',
+    title: 'Tenders details',
+    group: 'bids',
+    period_basis: 'Bid issue date (else the day it was logged)',
+    roles: SHEET_ALL,
+    not_tracked: ['Participants'],
+    columns: [
+      col('zone', 'Zone'),
+      col('person', 'Name of the Person Handling'),
+      col('customer', 'Customer / Department'),
+      col('state', 'State'),
+      col('equipment', 'Name of Equipment'),
+      col('quantity', 'Quantity', 'number'),
+      col('bid_no', 'BID NO'),
+      col('issue_date', 'Bid Issue Date', 'date'),
+      col('closing_date', 'Bid closing Date', 'date'),
+      col('prebid_date', 'Pre-Bid Date', 'date'),
+      col('corrigendum_date', 'Corrigendum / Representation Date', 'date'),
+      col('ra', 'RA (YES/NO)', 'yesno'),
+      col('oem_turnover', 'OEM Turnover requirement'),
+      col('bidder_turnover', 'Bidder Turnover requirement'),
+      col('emd', 'EMD', 'money'),
+      col('stage', 'Stage', 'status'),
+      col('remark', 'Remark'),
+    ],
+  },
+  {
+    key: 'emd',
+    title: 'EMD (Earnest Money Deposit)',
+    group: 'bids',
+    period_basis: null,
+    roles: SHEET_ALL,
+    not_tracked: [],
+    columns: [
+      col('zone', 'Zone'),
+      col('person', 'Name of the Person Handling'),
+      col('issue_date', 'Date of Issue', 'date'),
+      col('form', 'EMD Form'),
+      col('details', 'EMD Details'),
+      col('bid_no', 'Bid No.'),
+      col('bid_date', 'Bid Date', 'date'),
+      col('department', 'Name of Department'),
+      col('state', 'State'),
+      col('item', 'Item'),
+      col('quantity', 'Quantity', 'number'),
+      col('amount', 'EMD Amount', 'money'),
+      col('expiry_date', 'Exp. Date', 'date'),
+      col('receiving', 'EMD Receiving (Yes/No)', 'yesno'),
+      col('status', 'Status', 'status'),
+      col('remark', 'Remark'),
+    ],
+  },
+  {
+    key: 'performance_security',
+    title: 'Performance security',
+    group: 'bids',
+    period_basis: null,
+    roles: SHEET_ALL,
+    not_tracked: [],
+    columns: [
+      col('zone', 'Zone'),
+      col('person', 'Name of the Person Handling'),
+      col('issue_date', 'Date of Issue', 'date'),
+      col('details', 'Performance security Details'),
+      col('bid_no', 'Bid No.'),
+      col('contract_no', 'Contract No.'),
+      col('bid_date', 'Bid Date', 'date'),
+      col('contract_date', 'Contract Date', 'date'),
+      col('department', 'Name of Department'),
+      col('state', 'State'),
+      col('item', 'Item'),
+      col('quantity', 'Quantity', 'number'),
+      col('amount', 'Performance security Amount', 'money'),
+      col('expiry_date', 'Exp. Date', 'date'),
+      col('receiving', 'Performance Security Receiving (Yes/No)', 'yesno'),
+      col('status', 'Status', 'status'),
+      col('remark', 'Remark'),
+    ],
+  },
+  {
+    key: 'demonstrations',
+    title: 'Demonstration report',
+    group: 'bids',
+    period_basis: 'Demo date (confirmed, else requested)',
+    roles: ['management', 'admin', 'regional_manager', 'tender_team'],
+    not_tracked: [],
+    columns: [
+      col('zone', 'Zone'),
+      col('date', 'Date', 'date'),
+      col('customer', 'Customer / Department'),
+      col('state', 'State'),
+      col('location', 'Demonstration Location'),
+      col('tender', 'Tender Details'),
+      col('equipment', 'Equipment Demonstrated'),
+      col('conducted_by', 'Conducted By'),
+      col('aspects', 'Operational Aspects Shown'),
+      col('feedback', 'Participants / Committee Member Feedback / Observations'),
+      col('audience', 'Name / Designation / Department / Mobile'),
+      col('remarks', 'Remarks'),
+      col('negative', 'Any Negative Feedback'),
+      col('report', 'Demonstration Report (Yes/No)', 'yesno'),
+      col('suggestions', 'Suggestions from the Department'),
+      col('status', 'Status', 'status'),
+      col('remark', 'Remark'),
+    ],
+  },
+  {
+    key: 'orders',
+    title: 'Order details',
+    group: 'execution',
+    period_basis: 'Order date (bid result / proposal conversion)',
+    roles: ['management', 'admin', 'regional_manager', 'tender_team', 'accounts'],
+    not_tracked: ['GST %', 'HSN Code', 'Warranty Period'],
+    columns: [
+      col('zone', 'Zone'),
+      col('person', 'Name of Person Handling'),
+      col('customer', 'Customer / Department'),
+      col('state', 'State'),
+      col('bid_no', 'Bid No.'),
+      col('po_no', 'Contract / PO No.'),
+      col('po_date', 'Contract / PO Date', 'date'),
+      col('item', 'Item / Equipment Name'),
+      col('make', 'Make'),
+      col('model', 'Model'),
+      col('quantity', 'Quantity Ordered', 'number'),
+      col('unit_rate', 'Unit Rate', 'money'),
+      col('value', 'Total Order Value', 'money'),
+      col('source', 'Order Source'),
+    ],
+  },
+  {
+    key: 'deliveries',
+    title: 'Delivery report',
+    group: 'execution',
+    period_basis: 'Delivery date',
+    roles: ['management', 'admin', 'regional_manager', 'tender_team', 'accounts'],
+    not_tracked: ['Invoice No. & Date', 'Challan No. & Date'],
+    columns: [
+      col('zone', 'Zone'),
+      col('person', 'Name of the Person Handling'),
+      col('date', 'Delivery Date', 'date'),
+      col('customer', 'Customer / Department'),
+      col('state', 'State'),
+      col('bid_no', 'Bid No.'),
+      col('po_no', 'Contract / PO No.'),
+      col('item', 'Item / Equipment Name'),
+      col('qty_ordered', 'Quantity Ordered', 'number'),
+      col('qty_delivered', 'Quantity Delivered', 'number'),
+      col('location', 'Delivery Location'),
+      col('report', 'Delivery Report (Yes/No)', 'yesno'),
+      col('status', 'Status', 'status'),
+      col('remark', 'Remark'),
+    ],
+  },
+  {
+    key: 'service',
+    title: 'Service report',
+    group: 'execution',
+    period_basis: 'Complaint received date',
+    roles: ['management', 'admin', 'regional_manager'],
+    not_tracked: [],
+    columns: [
+      col('zone', 'Zone'),
+      col('date', 'Service Date', 'date'),
+      col('customer', 'Customer / Department'),
+      col('state', 'State'),
+      col('bid_no', 'Bid No.'),
+      col('po_no', 'Contract / PO No.'),
+      col('item', 'Item / Equipment Name'),
+      col('serial', 'Serial No.'),
+      col('ticket_no', 'Complaint / Service Request No.'),
+      col('complaint', 'Nature of Complaint'),
+      col('action', 'Service Action Taken'),
+      col('engineer', 'Service Engineer Name'),
+      col('report', 'Service Report (Yes/No)', 'yesno'),
+      col('status', 'Service Status / Remarks', 'status'),
+    ],
+  },
+  {
+    key: 'zone_mis',
+    title: 'Zone-wise MIS',
+    group: 'mis',
+    period_basis: 'Tenders identified / submitted / decided, orders and closed cases in the period; open items as of now',
+    roles: ['management', 'admin', 'regional_manager', 'tender_team', 'accounts'],
+    not_tracked: MIS_NOT_TRACKED,
+    columns: MIS_COLUMNS([col('label', 'Zone')]),
+  },
+  {
+    key: 'person_mis',
+    title: 'Person-wise performance MIS',
+    group: 'mis',
+    period_basis: 'Tenders identified / submitted / decided, orders and closed cases in the period; open items as of now',
+    roles: ['management', 'admin', 'regional_manager', 'tender_team', 'accounts'],
+    not_tracked: ['Invoice Value', 'Payment Received', 'Outstanding Payment'],
+    columns: [
+      col('sub', 'Zone'),
+      col('label', 'Name of Person Handling'),
+      col('tenders_total', 'Total Tenders', 'number'),
+      col('tenders_submitted', 'Submitted Tenders', 'number'),
+      col('tenders_under_evaluation', 'Tenders Under Evaluation', 'number'),
+      col('tenders_won', 'Won Tenders', 'number'),
+      col('tenders_lost', 'Lost Tenders', 'number'),
+      col('tenders_result_awaited', 'Result Awaited', 'number'),
+      col('win_rate', 'Conversion %', 'percent'),
+      col('tender_value', 'Total Tender Value', 'money'),
+      col('orders', 'Total Orders', 'number'),
+      col('order_value', 'Total Order Value', 'money'),
+      col('pending_follow_ups', 'Pending Follow-ups', 'number'),
+      col('pending_deliveries', 'Pending Deliveries', 'number'),
+      col('open_service_cases', 'Open Service Cases', 'number'),
+      col('emd_blocked', 'EMD Pending Return', 'money'),
+      col('security_held', 'Performance Security Active', 'money'),
+    ],
+  },
+  {
+    key: 'state_mis',
+    title: 'State-wise MIS',
+    group: 'mis',
+    period_basis: 'Tenders identified / submitted / decided, orders and closed cases in the period; open items as of now',
+    roles: ['management', 'admin', 'regional_manager', 'tender_team', 'accounts'],
+    not_tracked: MIS_NOT_TRACKED,
+    columns: MIS_COLUMNS([col('label', 'State')]),
+  },
+  {
+    key: 'product_mis',
+    title: 'Product-wise business dashboard',
+    group: 'mis',
+    period_basis: 'Tenders identified / submitted / decided and orders in the period; open items as of now',
+    roles: ['management', 'admin', 'regional_manager', 'tender_team', 'accounts'],
+    not_tracked: ['Ordered Quantity', 'Delivered Quantity', 'Balance Quantity', 'Invoice Value', 'Payment Received', 'Outstanding Amount', 'AMC Potential'],
+    columns: [
+      col('label', 'Equipment Name'),
+      col('sub', 'Category'),
+      col('tenders_submitted', 'Total Tender Participated', 'number'),
+      col('tender_quantity', 'Tender Quantity', 'number'),
+      col('tenders_won', 'Tenders Won', 'number'),
+      col('win_rate', 'Win Rate %', 'percent'),
+      col('orders', 'Total Orders', 'number'),
+      col('order_value', 'Order Value', 'money'),
+      col('pending_deliveries', 'Pending Deliveries', 'number'),
+      col('open_service_cases', 'Open Service Cases', 'number'),
+    ],
+  },
+  {
+    key: 'pipeline',
+    title: 'Sales pipeline dashboard',
+    group: 'sales',
+    period_basis: 'Date identified (lead created)',
+    roles: ['management', 'admin', 'regional_manager'],
+    not_tracked: [],
+    columns: [
+      col('date', 'Date Identified', 'date'),
+      col('zone', 'Zone'),
+      col('person', 'Responsible Person'),
+      col('customer', 'Customer / Department'),
+      col('state', 'State'),
+      col('description', 'Opportunity Description'),
+      col('equipment', 'Equipment'),
+      col('quantity', 'Expected Quantity', 'number'),
+      col('value', 'Estimated Value', 'money'),
+      col('tender_date', 'Expected Tender Date', 'date'),
+      col('probability', 'Probability %', 'percent'),
+      col('weighted', 'Weighted Value', 'money'),
+      col('stage', 'Opportunity Stage', 'status'),
+      col('order_date', 'Expected Order Date'),
+      col('next_action', 'Next Action'),
+      col('followup_date', 'Follow-up Date', 'date'),
+    ],
+  },
+  {
+    key: 'quotations',
+    title: 'Quotation / price bid dashboard',
+    group: 'sales',
+    period_basis: 'Quotation requested date',
+    roles: ['management', 'admin', 'regional_manager', 'tender_team'],
+    not_tracked: ['Basic Value', 'GST'],
+    columns: [
+      col('zone', 'Zone'),
+      col('person', 'Responsible Person'),
+      col('customer', 'Customer / Department'),
+      col('state', 'State'),
+      col('quotation_no', 'Quotation No.'),
+      col('date', 'Quotation Date', 'date'),
+      col('validity', 'Validity Date', 'date'),
+      col('equipment', 'Equipment'),
+      col('quantity', 'Quantity', 'number'),
+      col('value', 'Total Quotation Value', 'money'),
+      col('status', 'Quotation Status', 'status'),
+      col('followup_date', 'Follow-up Date', 'date'),
+      col('remark', 'Remarks'),
+    ],
+  },
+  {
+    key: 'expenses',
+    title: 'Expense and travel dashboard',
+    group: 'sales',
+    period_basis: 'Expense date',
+    roles: ['management', 'admin', 'accounts', 'regional_manager'],
+    not_tracked: ['Advance Received', 'Balance Amount'],
+    columns: [
+      col('date', 'Date', 'date'),
+      col('employee', 'Employee Name'),
+      col('zone', 'Zone'),
+      col('department', 'Department'),
+      col('type', 'Expense Type'),
+      col('customer', 'Customer / Project'),
+      col('from', 'Travel From'),
+      col('to', 'Travel To'),
+      col('amount', 'Expense Amount', 'money'),
+      col('reimbursed', 'Amount Reimbursed', 'money'),
+      col('status', 'Approval Status', 'status'),
+      col('approved_by', 'Approved By'),
+      col('remark', 'Remarks'),
+    ],
+  },
+];
+
+export function sheetDef(key: string): SheetDef | undefined {
+  return SHEETS.find((s) => s.key === key);
+}
+
+export function canViewSheet(role: UserRole | string | null | undefined, key: SheetKey): boolean {
+  const def = sheetDef(key);
+  return !!role && !!def && (def.roles as readonly string[]).includes(role);
+}
+
+/** Lead probability band → the % the pipeline sheet weights its value by. */
+export const LEAD_PROBABILITY_PCT: Record<string, number> = { high: 75, medium: 50, low: 25 };
+
+export type SheetCell = string | number | null;
+
+export interface SheetRow {
+  id: string;
+  /** Where the row opens in BOS (the tender dossier, demo, ticket …). */
+  link: string | null;
+  cells: Record<string, SheetCell>;
+}
+
+/** GET /reports/sheets/:key */
+export interface SheetDto {
+  key: SheetKey;
+  title: string;
+  period: ReportPeriod | null;
+  filters: ReportTerritoryFilters;
+  columns: SheetColumn[];
+  not_tracked: string[];
+  period_basis: string | null;
+  rows: SheetRow[];
+  /** Column totals for money / number columns (MIS sheets: the totals row). */
+  totals: Record<string, SheetCell> | null;
   total: number;
   page: number;
   limit: number;

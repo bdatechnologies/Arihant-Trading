@@ -5,10 +5,6 @@ import {
   Card,
   Button,
   Badge,
-  Input,
-  Select,
-  Textarea,
-  Modal,
   Table,
   TableHeader,
   TableBody,
@@ -23,44 +19,28 @@ import {
   type RecordTone,
   type BoardLane,
 } from '@/components/ui';
-import {
-  DollarSign,
-  IndianRupee,
-  Clock,
-  AlertTriangle,
-  CheckCircle2,
-  RefreshCw,
-  Building2,
-  ExternalLink,
-  ShieldAlert,
-  ArrowRight,
-  Filter,
-  FileCheck,
-} from 'lucide-react';
+import { IndianRupee, Clock, AlertTriangle, ExternalLink, FileCheck, Hourglass } from 'lucide-react';
 import { api } from '@/lib/api';
+import { istToday } from '@/lib/ist-date';
 import { useInfiniteList } from '@/lib/use-infinite-list';
-import { formatTaskDate, TENDER_FINANCIAL_INSTRUMENT_STATUSES } from '@arihant/shared';
+import {
+  formatTaskDate,
+  instrumentActionsFor,
+  instrumentStatusLabel,
+  TENDER_FINANCIAL_INSTRUMENT_STATUSES,
+} from '@arihant/shared';
+import { InstrumentWorkflowModal, instrumentTone, istDayOf, type InstrumentRecord } from './InstrumentWorkflowModal';
 
 interface FinanceEmdViewProps {
   currentUser: any;
   onOpenDossier: (tenderId: string) => void;
 }
 
-/** Roles allowed to PATCH an instrument (API: management, accounts, admin). Everyone else sees this screen read-only. */
-const INSTRUMENT_EDITOR_ROLES = ['management', 'accounts', 'admin'];
-
-/** Extra wording for some statuses in the picker; the values themselves are the shared enum. */
-const STATUS_HINTS: Record<string, string> = {
-  Submitted: 'Submitted (committed on portal)',
-  Refunded: 'Refunded (received back in bank)',
-  Released: 'Released (PBG returned)',
-};
-
 /** Instruments fetched per page while the list scrolls. */
 const EMD_PAGE_SIZE = 25;
 
 /** The view picked above the list; GET /tenders/finance/emd-tracking filters by it (`filter`). */
-type EmdFilter = 'refund_due' | 'blocked' | 'pbg' | 'all';
+type EmdFilter = 'action' | 'expiring' | 'refund_due' | 'blocked' | 'pbg' | 'all';
 
 /**
  * Page 1 of GET /tenders/finance/emd-tracking also carries the KPI totals and each view's count, summed over every
@@ -69,9 +49,12 @@ type EmdFilter = 'refund_due' | 'blocked' | 'pbg' | 'all';
 interface EmdSummary {
   total_emd_blocked: number;
   total_refund_due: number;
+  total_pbg_held: number;
   refund_due_count: number;
   refund_aging_over_30_count: number;
   active_pbg_count: number;
+  action_count: number;
+  expiring_count: number;
   counts: Record<EmdFilter, number>;
 }
 
@@ -79,9 +62,9 @@ interface EmdSummary {
 const STATUS_LANES: BoardLane[] = TENDER_FINANCIAL_INSTRUMENT_STATUSES.map((s) => ({ key: s, label: s, tone: statusTone(s) }));
 
 function statusTone(status?: string | null): RecordTone {
-  if (status === 'Refund Due') return 'warning';
+  if (status === 'Refund Due' || status === 'Requested' || status === 'Approved') return 'warning';
   if (status === 'Refunded' || status === 'Released') return 'success';
-  if (status === 'Forfeited') return 'danger';
+  if (status === 'Forfeited' || status === 'Rejected') return 'danger';
   return 'neutral';
 }
 
@@ -96,19 +79,18 @@ export function FinanceEmdView({
 }: FinanceEmdViewProps) {
   const [data, setData] = useState<EmdSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [filterType, setFilterType] = useState<EmdFilter>('refund_due');
+  const [filterType, setFilterType] = useState<EmdFilter>('action');
 
-  const canUpdate = INSTRUMENT_EDITOR_ROLES.includes(currentUser?.role);
   // Accounts can't load a tender (GET /tenders/:id), so the tender number is plain text for them.
   const canOpenDossier = currentUser?.role !== 'accounts';
+  const role: string | undefined = currentUser?.role;
+  const today = istToday();
+  /** Steps this role may take on an instrument now (the shared EMD workflow). */
+  const stepsFor = (inst: any) =>
+    instrumentActionsFor({ ...inst, issue_date: istDayOf(inst.issue_date), expiry_date: istDayOf(inst.expiry_date) }, role, today);
 
-  // Status update modal
-  const [selectedInstrument, setSelectedInstrument] = useState<any | null>(null);
-  const [updateStatus, setUpdateStatus] = useState<string>('');
-  const [statusNotes, setStatusNotes] = useState<string>('');
-  const [referenceNumber, setReferenceNumber] = useState<string>('');
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const [isUpdating, setIsUpdating] = useState(false);
+  // The instrument whose workflow dialog is open.
+  const [selectedInstrument, setSelectedInstrument] = useState<InstrumentRecord | null>(null);
 
   // The picked view's instruments, one page per request, appended as the list scrolls (the server filters by view).
   // Page 1 also carries the KPI totals; the hook swallows fetch errors, so page 1 reports its own here. An answer for
@@ -135,50 +117,7 @@ export function FinanceEmdView({
   const instruments = useInfiniteList<any>(fetchInstrumentsPage);
   const { rows: displayedList, total: displayedTotal, loading, refresh: loadData } = instruments;
 
-  const handleOpenStatusModal = (inst: any) => {
-    setSelectedInstrument(inst);
-    setUpdateStatus(inst.status || '');
-    setStatusNotes('');
-    setReferenceNumber(inst.reference_number || '');
-    setSaveError(null);
-  };
-
-  const closeStatusModal = () => {
-    if (isUpdating) return;
-    setSelectedInstrument(null);
-    setSaveError(null);
-  };
-
-  const trimmedReference = referenceNumber.trim();
-  const referenceChanged =
-    Boolean(selectedInstrument) && trimmedReference !== '' && trimmedReference !== (selectedInstrument?.reference_number || '');
-  const hasChanges =
-    Boolean(selectedInstrument) &&
-    (updateStatus !== selectedInstrument?.status || statusNotes.trim() !== '' || referenceChanged);
-
-  const handleSaveStatus = async () => {
-    if (!selectedInstrument || !hasChanges) return;
-    try {
-      setIsUpdating(true);
-      setSaveError(null);
-      await api.patch(
-        `/tenders/${selectedInstrument.tender_id}/financial-instruments/${selectedInstrument.id}`,
-        {
-          status: updateStatus,
-          // Notes are the instrument's remarks; the bank reference (BG/DD/UTR no.) is only sent when edited.
-          remarks: statusNotes.trim() || undefined,
-          reference_number: referenceChanged ? trimmedReference : undefined,
-        },
-      );
-      setSelectedInstrument(null);
-      await loadData();
-    } catch (err: any) {
-      console.error('Failed to update instrument status:', err);
-      setSaveError(errorText(err, 'Failed to update status.'));
-    } finally {
-      setIsUpdating(false);
-    }
-  };
+  const handleOpenStatusModal = (inst: any) => setSelectedInstrument(inst as InstrumentRecord);
 
   const formatCurrency = (val: number | null | undefined) => {
     if (val === null || val === undefined || isNaN(val)) return '—';
@@ -191,9 +130,11 @@ export function FinanceEmdView({
 
   const counts = data?.counts;
   const viewLabel: Record<EmdFilter, string> = {
+    action: 'waiting on approval or payment',
+    expiring: 'expiring within 30 days',
     refund_due: 'refunds due',
     blocked: 'active EMDs',
-    pbg: 'PBGs',
+    pbg: 'performance securities',
     all: 'instruments',
   };
 
@@ -206,21 +147,22 @@ export function FinanceEmdView({
       code: inst.tender_number || inst.tender_no || 'Tender',
       title: `${inst.instrument_type} · ${inst.organisation_name || 'Department'}`,
       subtitle: [inst.mode || 'Online', inst.bank].filter(Boolean).join(' · '),
-      status: { label: inst.status, tone: statusTone(inst.status) },
+      status: { label: instrumentStatusLabel(inst.instrument_type, inst.status), tone: statusTone(inst.status) },
       badges:
         refundDue && daysPending !== null
           ? [{ label: `${daysPending} day${daysPending === 1 ? '' : 's'} pending`, tone: daysPending > 30 ? 'danger' : 'warning' }]
           : undefined,
       due:
         !refundDue && inst.expiry_date
-          ? { date: inst.expiry_date, label: 'Expires', done: ['Refunded', 'Released', 'Forfeited', 'Expired'].includes(inst.status) }
+          ? { date: istDayOf(inst.expiry_date) || inst.expiry_date, label: 'Expires', done: !['Issued', 'Submitted'].includes(inst.status) }
           : undefined,
       value: formatCurrency(inst.amount),
       facts: [
         { label: 'Reference No.', value: inst.reference_number || '—' },
-        { label: 'Remarks', value: inst.remarks || '—' },
+        { label: 'Requested by', value: inst.requested_by_name || '—' },
+        { label: 'Remarks', value: inst.closure_reason || inst.remarks || '—' },
       ],
-      primary: canUpdate ? { label: 'Update Status', onClick: () => handleOpenStatusModal(inst) } : undefined,
+      primary: { label: stepsFor(inst).length ? 'Next step' : 'View', onClick: () => handleOpenStatusModal(inst) },
       onOpen: canOpenDossier && inst.tender_id ? () => onOpenDossier(inst.tender_id) : undefined,
     };
   });
@@ -306,21 +248,12 @@ export function FinanceEmdView({
               </TableCell>
 
               <TableCell>
-                <Badge
-                  variant={
-                    inst.status === 'Refund Due'
-                      ? 'warning'
-                      : inst.status === 'Refunded' ||
-                          inst.status === 'Released'
-                        ? 'success'
-                        : inst.status === 'Forfeited'
-                          ? 'danger'
-                          : 'default'
-                  }
-                  size="sm"
-                >
-                  {inst.status}
+                <Badge variant={instrumentTone(inst.status)} size="sm">
+                  {instrumentStatusLabel(inst.instrument_type, inst.status)}
                 </Badge>
+                {(inst.status === 'Requested' || inst.status === 'Approved') && inst.required_by && (
+                  <div className="mt-0.5 text-[10px] text-[#6B7280]">Needed by {formatTaskDate(istDayOf(inst.required_by) || inst.required_by)}</div>
+                )}
               </TableCell>
 
               <TableCell className="text-xs">
@@ -339,7 +272,12 @@ export function FinanceEmdView({
                   )
                 ) : inst.expiry_date ? (
                   <span className="font-mono text-[#4A5568]">
-                    Exp: {formatTaskDate(inst.expiry_date)}
+                    Exp: {formatTaskDate(istDayOf(inst.expiry_date) || inst.expiry_date)}
+                    {typeof inst.days_to_expiry === 'number' && inst.days_to_expiry <= 30 && ['Issued', 'Submitted'].includes(inst.status) && (
+                      <span className={`ml-1 font-semibold ${inst.days_to_expiry < 0 ? 'text-[#881337]' : 'text-[#9A3412]'}`}>
+                        ({inst.days_to_expiry < 0 ? 'lapsed' : `${inst.days_to_expiry}d`})
+                      </span>
+                    )}
                   </span>
                 ) : (
                   <span className="text-[#6B7280]">—</span>
@@ -348,15 +286,9 @@ export function FinanceEmdView({
 
               <TableCell className="text-right">
                 <div className="flex items-center justify-end gap-1.5">
-                  {canUpdate && (
-                    <Button
-                      size="xs"
-                      variant="outline"
-                      onClick={() => handleOpenStatusModal(inst)}
-                    >
-                      Update Status
-                    </Button>
-                  )}
+                  <Button size="xs" variant={stepsFor(inst).length ? 'primary' : 'outline'} onClick={() => handleOpenStatusModal(inst)}>
+                    {stepsFor(inst).length ? 'Next step' : 'View'}
+                  </Button>
                   {canOpenDossier && inst.tender_id && (
                     <Button
                       size="xs"
@@ -428,96 +360,85 @@ export function FinanceEmdView({
             {formatCurrency(data?.total_refund_due || 0)}
           </div>
           <p className="mt-1 text-[11px] text-[#4A5568]">
-            {data?.refund_due_count || 0} instruments awaiting recovery
+            {data?.refund_due_count || 0} awaiting recovery
+            {data?.refund_aging_over_30_count ? <span className="text-[#881337] font-medium"> · {data.refund_aging_over_30_count} over 30 days</span> : null}
           </p>
         </Card>
 
         <Card className="p-4 bg-white border-[#DCD8CE]">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-bold text-[#4A5568] uppercase tracking-wider">
-              Aging &gt; 30 Days
+              Waiting on someone
             </span>
-            <span className="p-1.5 rounded-lg bg-[#FCE8EC] text-[#881337]">
-              <AlertTriangle className="w-4 h-4" />
+            <span className="p-1.5 rounded-lg bg-[#FFF8EB] text-[#A15C07]">
+              <Hourglass className="w-4 h-4" />
             </span>
           </div>
-          <div className="mt-2 text-2xl font-serif font-bold font-mono text-[#700F2D]">
-            {data?.refund_aging_over_30_count || 0} Items
+          <div className="mt-2 text-2xl font-serif font-bold font-mono text-[#14213D]">
+            {data?.action_count || 0}
           </div>
-          <p className="mt-1 text-[11px] text-[#881337] font-medium">
-            Requires immediate buyer escalation
+          <p className="mt-1 text-[11px] text-[#4A5568]">
+            Requests awaiting approval or payment
           </p>
         </Card>
 
         <Card className="p-4 bg-white border-[#DCD8CE]">
           <div className="flex items-center justify-between">
             <span className="text-[11px] font-bold text-[#4A5568] uppercase tracking-wider">
-              Active PBGs
+              Performance security held
             </span>
             <span className="p-1.5 rounded-lg bg-[#ECE9E2] text-[#14213D]">
               <FileCheck className="w-4 h-4" />
             </span>
           </div>
           <div className="mt-2 text-2xl font-serif font-bold font-mono text-[#14213D]">
-            {data?.active_pbg_count || 0}
+            {formatCurrency(data?.total_pbg_held || 0)}
           </div>
           <p className="mt-1 text-[11px] text-[#4A5568]">
-            Bank guarantees against won contracts
+            {data?.active_pbg_count || 0} PBG / security deposits with buyers
           </p>
         </Card>
       </div>
 
-      {/* Filter Segmented Controls */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div className="flex items-center bg-white p-1 rounded-lg border border-[#DCD8CE]">
-          <button
-            onClick={() => setFilterType('refund_due')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
-              filterType === 'refund_due'
-                ? 'bg-[#9A3412] text-white shadow-sm'
-                : 'text-[#4A5568] hover:text-[#14213D]'
-            }`}
-          >
-            Refunds Due ({data?.refund_due_count || 0})
-          </button>
-          <button
-            onClick={() => setFilterType('blocked')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
-              filterType === 'blocked'
-                ? 'bg-[#0F5E63] text-white shadow-sm'
-                : 'text-[#4A5568] hover:text-[#14213D]'
-            }`}
-          >
-            Active EMDs (Blocked){counts ? ` (${counts.blocked})` : ''}
-          </button>
-          <button
-            onClick={() => setFilterType('pbg')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
-              filterType === 'pbg'
-                ? 'bg-[#14213D] text-white shadow-sm'
-                : 'text-[#4A5568] hover:text-[#14213D]'
-            }`}
-          >
-            Performance Guarantees (PBG){counts ? ` (${counts.pbg})` : ''}
-          </button>
-          <button
-            onClick={() => setFilterType('all')}
-            className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
-              filterType === 'all'
-                ? 'bg-[#14213D] text-white shadow-sm'
-                : 'text-[#4A5568] hover:text-[#14213D]'
-            }`}
-          >
-            All Instruments ({counts?.all || 0})
-          </button>
-        </div>
-      </div>
-
-      {!canUpdate && (
-        <InfoCallout variant="neutral" title="Read-only">
-          Only Management, Accounts and Admin can update instrument status. You can follow EMD and PBG recovery here.
+      {((data?.expiring_count || 0) > 0 || (data?.refund_aging_over_30_count || 0) > 0) && (
+        <InfoCallout variant="warning" title="Needs follow-up">
+          {[
+            data?.expiring_count ? `${data.expiring_count} instrument${data.expiring_count === 1 ? '' : 's'} with buyers expire within 30 days (or have lapsed)` : null,
+            data?.refund_aging_over_30_count ? `${data.refund_aging_over_30_count} EMD refund${data.refund_aging_over_30_count === 1 ? '' : 's'} pending over 30 days` : null,
+          ]
+            .filter(Boolean)
+            .join(' · ')}
+          .
         </InfoCallout>
       )}
+
+      {/* Filter Segmented Controls */}
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex flex-wrap items-center gap-1 bg-white p-1 rounded-lg border border-[#DCD8CE]">
+          {(
+            [
+              ['action', 'Needs action', data?.action_count],
+              ['expiring', 'Expiring', data?.expiring_count],
+              ['refund_due', 'Refunds due', data?.refund_due_count],
+              ['blocked', 'Active EMDs', counts?.blocked],
+              ['pbg', 'PBG / security', counts?.pbg],
+              ['all', 'All', counts?.all],
+            ] as [EmdFilter, string, number | undefined][]
+          ).map(([key, label, n]) => (
+            <button
+              key={key}
+              onClick={() => setFilterType(key)}
+              aria-pressed={filterType === key}
+              className={`px-3 py-1.5 text-xs font-semibold rounded-md transition-colors ${
+                filterType === key ? 'bg-[#0F5E63] text-white shadow-sm' : 'text-[#4A5568] hover:text-[#14213D]'
+              }`}
+            >
+              {label}
+              {typeof n === 'number' ? ` (${n})` : ''}
+            </button>
+          ))}
+        </div>
+      </div>
 
       {/* Instruments: one page at a time, the next page loads as the list scrolls. A newly picked view shows the loader
           rather than the previous view's rows until its first page arrives. */}
@@ -555,88 +476,12 @@ export function FinanceEmdView({
         />
       )}
 
-      {/* Update Status Modal */}
-      <Modal
-        isOpen={Boolean(selectedInstrument)}
-        onClose={closeStatusModal}
-        title="Update Security Instrument Status"
-        description={
-          selectedInstrument
-            ? `Instrument: ${selectedInstrument.instrument_type} • Amount: ${formatCurrency(selectedInstrument.amount)}`
-            : undefined
-        }
-        maxWidth="sm"
-      >
-        <div className="space-y-4 text-xs">
-          {saveError && (
-            <InfoCallout variant="danger" title="Not saved" onClose={() => setSaveError(null)}>
-              {saveError}
-            </InfoCallout>
-          )}
-
-          <Select
-            label="Status"
-            required
-            value={updateStatus}
-            onChange={(e) => setUpdateStatus(e.target.value)}
-            searchable={false}
-            options={(
-              selectedInstrument?.status &&
-              !(TENDER_FINANCIAL_INSTRUMENT_STATUSES as string[]).includes(selectedInstrument.status)
-                ? [selectedInstrument.status as string, ...TENDER_FINANCIAL_INSTRUMENT_STATUSES]
-                : (TENDER_FINANCIAL_INSTRUMENT_STATUSES as string[])
-            ).map((s) => ({
-              value: s,
-              label: STATUS_HINTS[s] || s,
-              hint: s === selectedInstrument?.status ? 'Current' : undefined,
-              hintTone: 'neutral' as const,
-            }))}
-          />
-
-          <Input
-            label="Reference No. (BG / DD / UTR)"
-            placeholder="Bank guarantee, DD or transaction number"
-            value={referenceNumber}
-            onChange={(e) => setReferenceNumber(e.target.value)}
-            helperText="Change only if the bank reference itself has changed."
-            className="font-mono"
-          />
-
-          <Textarea
-            label="Remarks"
-            rows={3}
-            placeholder="e.g. Refund credited vide UTR …, or reason for forfeiture"
-            value={statusNotes}
-            onChange={(e) => setStatusNotes(e.target.value)}
-          />
-          {selectedInstrument?.remarks && (
-            <p className="-mt-2 text-[11px] text-[#4A5568]">
-              Current remark: <span className="text-[#14213D]">{selectedInstrument.remarks}</span>
-              {' '}(kept unless you write a new one)
-            </p>
-          )}
-
-          <div className="flex items-center justify-end gap-2 pt-3 border-t border-[#ECE9E2]">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={closeStatusModal}
-              disabled={isUpdating}
-            >
-              Cancel
-            </Button>
-            <Button
-              variant="primary"
-              size="sm"
-              onClick={handleSaveStatus}
-              isLoading={isUpdating}
-              disabled={!hasChanges || !updateStatus}
-            >
-              Save Update
-            </Button>
-          </div>
-        </div>
-      </Modal>
+      <InstrumentWorkflowModal
+        instrument={selectedInstrument}
+        role={role}
+        onClose={() => setSelectedInstrument(null)}
+        onChanged={() => void loadData()}
+      />
     </div>
   );
 }

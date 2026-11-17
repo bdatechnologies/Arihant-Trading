@@ -9,6 +9,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, Copy, Download, KeyRound, Upload } from 'lucide-react';
 import { api } from '@/lib/api';
+import { phoneInput } from '@/lib/phone-input';
 import { Badge, Button, Checkbox, InfoCallout, Input, Modal, Select, Textarea } from '@/components/ui';
 import { ROLE_PROFILES, USER_ROLES, type UserRole } from '@arihant/shared';
 
@@ -175,7 +176,7 @@ export const UserFormModal: React.FC<{
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Input label="Full name" required value={form.full_name} onChange={(e) => set({ full_name: e.target.value })} maxLength={120} />
           <Input label="Official email" type="email" required value={form.email} onChange={(e) => set({ email: e.target.value })} maxLength={254} />
-          <Input label="Mobile" type="tel" inputMode="tel" value={form.phone} onChange={(e) => set({ phone: e.target.value })} placeholder="+91 98110 00000" />
+          <Input label="Mobile" type="tel" inputMode="tel" value={form.phone} onChange={(e) => set({ phone: phoneInput(e.target.value) })} placeholder="+91 98110 00000" />
           <Select
             label="Role"
             required

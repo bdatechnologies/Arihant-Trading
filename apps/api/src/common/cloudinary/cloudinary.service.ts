@@ -46,7 +46,9 @@ export class CloudinaryService implements OnModuleInit {
   async onModuleInit() {
     if (process.env.NODE_ENV === 'test') return;
     if ((await this.checkCredentials()) === 'rejected') {
-      this.logger.error('Cloudinary rejected CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET — every file upload will fail until the secret matches the key.');
+      this.logger.error(
+        'Cloudinary rejected CLOUDINARY_CLOUD_NAME / CLOUDINARY_API_KEY / CLOUDINARY_API_SECRET — every file upload will fail until all three are this account’s real values (the .env.example placeholders are not).',
+      );
     }
   }
 
@@ -81,7 +83,7 @@ export class CloudinaryService implements OnModuleInit {
   async assertCredentialsAccepted() {
     if ((await this.checkCredentials()) === 'rejected') {
       throw new ServiceUnavailableException(
-        'File uploads are unavailable: Cloudinary rejects the server’s upload credentials. An administrator needs to set CLOUDINARY_API_SECRET to the secret of this API key (Cloudinary console → Settings → API Keys).',
+        'File uploads are unavailable: Cloudinary rejects the server’s upload credentials. An administrator needs to set CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET to the account’s values (Cloudinary console → Settings → API Keys) and restart the API.',
       );
     }
   }

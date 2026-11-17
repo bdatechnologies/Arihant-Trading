@@ -450,8 +450,10 @@ button[aria-haspopup='listbox']:hover, button[aria-haspopup='listbox'][aria-expa
   table[data-stackable] tbody td:first-child { grid-column: 1 / -1; padding-bottom: 8px !important; border-bottom: 1px dashed var(--th-line) !important; }
   table[data-stackable] tbody td:not(:first-child)::before { content: attr(data-label); display: block; margin-bottom: 2px; font-size: 10px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--th-faint); }
   table[data-stackable] tbody td[colspan] { grid-column: 1 / -1; }
-  /* not inside dialogs: there the body would pan sideways (or clip the table) instead of the table scrolling */
-  .overflow-x-auto:not([role='dialog'] *) { overflow-x: visible; }
+  /* only the box around a stacked table stops scrolling (its rows are cards now). Applied to every `.overflow-x-auto`
+     this switched sideways scrolling off for all wide tables and strips below 1180px, so they pushed the whole page
+     sideways (regional performance, reports) or were cut off inside cards (admin, audit). Not inside dialogs either. */
+  .overflow-x-auto:has(table[data-stackable]):not([role='dialog'] *) { overflow-x: visible; }
 }
 /* two short fields per row on phones (Quantity | Unit price …); one column only on very narrow screens */
 @media (max-width: 340px) { table[data-stackable] tbody tr { grid-template-columns: 1fr; } }
@@ -752,4 +754,18 @@ html[data-app-theme] .app-search :is(span, svg) { color: #4A5568; }
 /* phones: 16px text in fields so iOS Safari does not zoom the page (and the sheet) on focus */
 @media (max-width: 639.98px) and (pointer: coarse) {
   html[data-app-theme] :is(input:not([type='checkbox']):not([type='radio']):not([type='range']), select, textarea) { font-size: 16px; }
+}
+/* touch screens: controls a thumb can hit (WCAG 2.5.8, 24px). Row-select checkboxes and radios were 13–16px and
+   sortable column headers 16px tall; the mouse layout is unchanged. */
+@media (pointer: coarse) {
+  html[data-app-theme] :is(input[type='checkbox'], input[type='radio']) { min-width: 24px; min-height: 24px; }
+  html[data-app-theme] th :is(button, [role='button']) { min-height: 32px; }
+  /* small segmented tabs (report breakdowns: Zone / Engineer / Category…) were 22px tall */
+  html[data-app-theme] [role='tab'] { min-height: 32px; }
+}
+/* phones: no text below 10px, and the common 10px micro-labels at 11px (Apple's readable minimum). Desktop keeps the
+   denser type. `html` raises specificity above the Tailwind utility it adjusts. */
+@media (max-width: 639.98px) {
+  html :is(.text-\[8px\], .text-\[9px\]) { font-size: 10px; }
+  html :is(.text-\[10px\], .text-\[10\.5px\]) { font-size: 11px; }
 }

@@ -388,7 +388,7 @@ const taskNote = (t: EvidenceTaskRow) => [t.excluded === 'cancelled' && t.cancel
 
 const TaskLink: React.FC<{ id?: string | null; number: string }> = ({ id, number }) =>
   id ? (
-    <Link href={`/tasks/${id}`} className="font-mono text-xs font-semibold text-[#0F5E63] hover:underline whitespace-nowrap">
+    <Link href={`/tasks/${id}`} className="-my-1 inline-block py-1 font-mono text-xs font-semibold text-[#0F5E63] hover:underline whitespace-nowrap">
       {number}
     </Link>
   ) : (

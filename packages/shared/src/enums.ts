@@ -187,6 +187,8 @@ export const TENDER_FINANCIAL_INSTRUMENT_TYPES: TenderFinancialInstrumentType[] 
 export type TenderFinancialInstrumentStatus =
   | 'Requested'
   | 'Approved'
+  | 'Rejected'
+  | 'Cancelled'
   | 'Issued'
   | 'Submitted'
   | 'Refund Due'
@@ -194,9 +196,12 @@ export type TenderFinancialInstrumentStatus =
   | 'Forfeited'
   | 'Released'
   | 'Expired';
+/** Lifecycle order (migration 050); the guarded moves between them live in emd-workflow.ts. */
 export const TENDER_FINANCIAL_INSTRUMENT_STATUSES: TenderFinancialInstrumentStatus[] = [
   'Requested',
   'Approved',
+  'Rejected',
+  'Cancelled',
   'Issued',
   'Submitted',
   'Refund Due',

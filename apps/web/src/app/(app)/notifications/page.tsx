@@ -45,9 +45,9 @@ interface NotificationItem {
   created_at: string;
 }
 
-type NotificationCategory = 'tender' | 'proposal' | 'lead' | 'task' | 'expense' | 'delivery' | 'system';
+type NotificationCategory = 'tender' | 'proposal' | 'lead' | 'visit' | 'demo' | 'service' | 'task' | 'expense' | 'delivery' | 'system';
 
-const CATEGORY_ORDER: NotificationCategory[] = ['tender', 'proposal', 'lead', 'task', 'expense', 'delivery', 'system'];
+const CATEGORY_ORDER: NotificationCategory[] = ['tender', 'proposal', 'lead', 'visit', 'demo', 'service', 'task', 'expense', 'delivery', 'system'];
 
 const CATEGORY_META: Record<
   NotificationCategory,
@@ -56,21 +56,27 @@ const CATEGORY_META: Record<
   tender: { label: 'Tender alerts', badgeLabel: 'Tender Alert', badge: 'warning' },
   proposal: { label: 'Proposals', badgeLabel: 'Proposal', badge: 'info' },
   lead: { label: 'Lead activity', badgeLabel: 'Lead Activity', badge: 'cyber' },
+  visit: { label: 'Field visits', badgeLabel: 'Field Visit', badge: 'info' },
+  demo: { label: 'Demos', badgeLabel: 'Demo', badge: 'cyber' },
+  service: { label: 'Service', badgeLabel: 'Service', badge: 'warning' },
   task: { label: 'Tasks & blockers', badgeLabel: 'Task Milestone', badge: 'urgent' },
   expense: { label: 'Expense claims', badgeLabel: 'Expense Claim', badge: 'warning' },
   delivery: { label: 'Logistics', badgeLabel: 'Logistics', badge: 'info' },
   system: { label: 'System', badgeLabel: 'System Notification', badge: 'default' },
 };
 
-/** Same precedence as the type badge: the first keyword that matches wins. */
+/** Same precedence as the server (NotificationsService CATEGORY_KEYWORDS): the first keyword that matches wins. */
 function categorize(type: string | null | undefined): NotificationCategory {
   const t = (type || '').toLowerCase();
   if (t.includes('tender')) return 'tender';
   if (t.includes('proposal')) return 'proposal';
-  if (t.includes('lead')) return 'lead';
+  if (t.includes('lead') || t.includes('followup_')) return 'lead';
   if (t.includes('task') || t.includes('blocker')) return 'task';
   if (t.includes('expense')) return 'expense';
   if (t.includes('delivery')) return 'delivery';
+  if (t.includes('demo')) return 'demo';
+  if (t.includes('service')) return 'service';
+  if (t.includes('visit') || t.includes('trip')) return 'visit';
   return 'system';
 }
 

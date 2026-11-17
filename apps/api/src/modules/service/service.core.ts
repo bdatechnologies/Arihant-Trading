@@ -1,4 +1,5 @@
 import { todayInKolkata } from '../../common/utils/ist-date.util.js';
+import { stripHtmlTags } from '../../common/utils/strip-html.js';
 import { Kysely, sql } from 'kysely';
 import type { Database } from '@arihant/shared';
 
@@ -219,10 +220,9 @@ export async function detectRepeatComplaint(
 
 /* ------------------------------------------------------------------ text -- */
 
-/** Strips control characters and HTML tags; collapses whitespace. Output is plain text only. */
+/** Strips control characters and HTML tags (a lone "<" / ">" is kept); collapses whitespace. Output is plain text only. */
 export function cleanText(input: unknown, max = 4000): string {
-  return String(input ?? '')
-    .replace(/<[^>]*>/g, ' ')
+  return stripHtmlTags(String(input ?? ''), ' ')
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')

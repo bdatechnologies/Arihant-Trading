@@ -21,7 +21,9 @@ export interface ScrollStripProps extends Omit<React.HTMLAttributes<HTMLDivEleme
  * Swipe, trackpad or shift-scroll it; arrow buttons and faded edges show only on the side that has
  * more. The selected item is kept in view.
  *
- * overflowX is inline because theme.css resets `.overflow-x-auto` below 1180px (for stacked tables).
+ * overflowX is inline so the track always scrolls, whatever class a caller passes (theme.css only resets
+ * `.overflow-x-auto` around stacked tables). Callers must not force `min-w-max` on it: the track would grow to fit
+ * every tab and never scroll.
  */
 export const ScrollStrip: React.FC<ScrollStripProps> = ({ children, className, wrapperClassName, activeKey, style, ...rest }) => {
   const track = useRef<HTMLDivElement>(null);
@@ -93,7 +95,7 @@ export const ScrollStrip: React.FC<ScrollStripProps> = ({ children, className, w
       <div
         ref={track}
         className={twMerge('relative flex min-w-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden', className)}
-        style={{ overflowX: 'auto', overflowY: 'hidden', overscrollBehaviorX: 'contain', WebkitMaskImage: mask, maskImage: mask, ...style }}
+        style={{ overflowX: 'auto', overflowY: 'hidden', overscrollBehaviorX: 'contain', minWidth: 0, WebkitMaskImage: mask, maskImage: mask, ...style }}
         {...rest}
       >
         {children}

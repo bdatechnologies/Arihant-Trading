@@ -2366,9 +2366,11 @@ export default function VisitsPage() {
                 Schedule Visit
               </Button>
             }
+            // Fixed pages: Agency & Schedule = step 1, Requirements = step 2; ticking Demo / Travel only adds step 3, so the user stays on step 2.
             steps={[
               {
                 title: 'Agency',
+                page: 0,
                 icon: <Building />,
                 description: isSalesRole
                   ? 'Which customer agency you will visit.'
@@ -2433,6 +2435,7 @@ export default function VisitsPage() {
               },
               {
                 title: 'Schedule',
+                page: 0,
                 icon: <Calendar />,
                 description: 'When the visit happens and its main purpose.',
                 content: (
@@ -2496,6 +2499,7 @@ export default function VisitsPage() {
               },
               {
                 title: 'Requirements',
+                page: 1,
                 icon: <Layers />,
                 description: 'Product focus, expected outcome, and whether a demo or travel is needed.',
                 content: (
@@ -2594,6 +2598,7 @@ export default function VisitsPage() {
               },
               {
                 title: 'Demo kit',
+                page: 2,
                 icon: <FlaskConical />,
                 description: 'Book a demo specialist and choose the equipment to take.',
                 hidden: !newVisit.demo_required,
@@ -2882,6 +2887,7 @@ export default function VisitsPage() {
               },
               {
                 title: 'Demo site',
+                page: 2,
                 icon: <Wrench />,
                 description: 'Audience, trial objective, and what the site needs ready.',
                 hidden: !newVisit.demo_required,
@@ -3005,6 +3011,7 @@ export default function VisitsPage() {
               },
               {
                 title: 'Travel',
+                page: 2,
                 icon: <Plane />,
                 description: 'Outstation travel, transit mode and overnight stay.',
                 hidden: !newVisit.travel_required,

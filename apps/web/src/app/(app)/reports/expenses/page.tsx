@@ -195,7 +195,6 @@ function ExpenseReport() {
                 <Tabs
                   variant="segmented"
                   size="sm"
-                  className="min-w-max"
                   activeTab={groupBy}
                   onChange={(id) => filters.set({ group_by: id === 'category' ? null : id })}
                   tabs={GROUPS.map((g) => ({ id: g.id, label: g.label, icon: g.id === 'date' || g.id === 'month' ? <CalendarDays className="h-3.5 w-3.5" /> : undefined }))}

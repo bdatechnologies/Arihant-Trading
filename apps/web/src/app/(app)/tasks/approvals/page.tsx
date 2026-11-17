@@ -107,7 +107,7 @@ export default function ApprovalQueuePage() {
             <Card key={t.id} className={`p-4 space-y-3 ${t.sla_breached ? 'border-[#9A3412]/40' : ''}`}>
               <div className="flex flex-wrap items-start justify-between gap-2">
                 <div className="min-w-0">
-                  <Link href={`/tasks/${t.id}`} className="font-mono text-xs font-semibold text-[#0F5E63] hover:underline inline-flex items-center gap-1">
+                  <Link href={`/tasks/${t.id}`} className="-my-1 py-1 font-mono text-xs font-semibold text-[#0F5E63] hover:underline inline-flex items-center gap-1">
                     {t.task_number} <ExternalLink className="h-3 w-3" />
                   </Link>
                   <div className="font-medium text-[#14213D] break-words">{t.title}</div>

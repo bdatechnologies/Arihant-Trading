@@ -382,7 +382,7 @@ export default function ProposalsPage() {
     sector: 'Defence',
     responsible_id: '',
     request_date: istToday(),
-    required_date: addIsoDays(istToday(), 7),
+    required_date: '', // blank on purpose: the user must pick the deadline
     reference: '',
     followup_owner_id: '',
     next_followup: '',
@@ -392,6 +392,8 @@ export default function ProposalsPage() {
   });
 
   const [formError, setFormError] = useState<string | null>(null);
+  // Set once Next / Submit trips over the deadline, so its message shows inline under the field.
+  const [requiredDateChecked, setRequiredDateChecked] = useState(false);
   // Server refusals are shown inside the open dialog (never alert() / silent failure).
   const [statusError, setStatusError] = useState<string | null>(null);
   const [followupError, setFollowupError] = useState<string | null>(null);
@@ -410,7 +412,7 @@ export default function ProposalsPage() {
       sector: 'Defence',
       responsible_id: '',
       request_date: istToday(),
-      required_date: addIsoDays(istToday(), 7),
+      required_date: '',
       reference: '',
       followup_owner_id: '',
       next_followup: '',
@@ -419,6 +421,7 @@ export default function ProposalsPage() {
       ...EMPTY_COMMERCIAL,
     });
     setFormError(null);
+    setRequiredDateChecked(false);
     setDuplicateWarning(null);
     setDuplicateOverrideReason('');
   };
@@ -1882,6 +1885,21 @@ export default function ProposalsPage() {
                         label="Required Completion Date"
                         required
                         value={newProposal.required_date}
+                        min={newProposal.request_date || undefined}
+                        error={
+                          !requiredDateChecked
+                            ? undefined
+                            : !newProposal.required_date
+                              ? 'Pick the date this quote is needed by'
+                              : newProposal.request_date && newProposal.required_date < newProposal.request_date
+                                ? 'Must be on or after the request date'
+                                : undefined
+                        }
+                        // Show the message under the field instead of the browser's tooltip.
+                        onInvalid={(e) => {
+                          e.preventDefault();
+                          setRequiredDateChecked(true);
+                        }}
                         onChange={(e) => setNewProposal({ ...newProposal, required_date: e.target.value })}
                       />
                     </div>
